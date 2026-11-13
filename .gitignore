@@ -1,0 +1,9 @@
+/build/
+/bench-cache/
+/.bench-cache/
+/native-cache/
+*.so
+*.tmp.so
+/build-*/
+/.bench-cache-*/
+/.bench-*/

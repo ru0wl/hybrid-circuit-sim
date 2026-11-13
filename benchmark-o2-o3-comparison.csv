@@ -1,0 +1,5 @@
+configuration,optimization_flag,cache_mode,runs,iterations,steps,median_runtime_ms,steps_per_second,native_compile_ms,total_preparation_ms,cache_hit
+O2-warm,-O2,warm,20,156,312,0.1928205,1618085.23052,0,1.3735815,true
+O3-warm,-O3,warm,20,168,336,0.209025,1607463.66728,0,1.2538755,true
+O2-cold,-O2,cold,3,170,340,0.209636,1621858.84104,120.940581,122.823348,false
+O3-cold,-O3,cold,3,168,336,0.206671,1625772.36284,124.786406,126.428911,false

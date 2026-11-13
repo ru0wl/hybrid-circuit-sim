@@ -1,0 +1,8 @@
+scenario,backend,steps,elapsed_ms,steps_per_second,operations,operations_per_second,setup_ms,cache_hit,checksum
+sparse-toggle,interpreted-event,5000,38.3775,130285,5000000,130285000,0.057827,false,2500
+sparse-toggle,interpreted-dense,5000,71.9561,69486.8,20010000,278086000,0.049044,false,2500
+sparse-toggle,compiled-native-cold,5000,15.7256,317953,20010000,1272450000,1530.38,false,2500
+sparse-toggle,compiled-native-warm,5000,14.3122,349352,20010000,1398100000,2.94644,true,2500
+binary-counter-32,interpreted-event,40000,9.92768,4029140,119980,12085400,0.00673,false,10000
+binary-counter-32,interpreted-dense,40000,58.3856,685101,5200000,89063100,0.004016,false,10000
+binary-counter-32,compiled-native,40000,15.1473,2640740,5200000,343296000,80.3877,false,10000
