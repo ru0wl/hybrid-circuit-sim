@@ -35,6 +35,9 @@ The previous clock level is updated on every step, including steps without a ris
 
 - Interpreted dense: repeated scalar passes over every combinational gate.
 - Interpreted event-driven: FIFO scheduling of gates whose input signals changed.
-- Compiled native: generated C++ shared object that evaluates the same combinational gate list in dense passes; flip-flop edge/state handling remains in the common simulator core.
+- Optimized IR dense: repeated scalar passes over optimized IR operations.
+- Optimized IR event-driven: FIFO scheduling of optimized IR operations whose input signals changed.
+- Experimental HybridIR: dirty-region scheduling; acyclic regions use deterministic topological single-pass evaluation, while feedback regions use reusable local FIFO operation queues with duplicate suppression.
+- Compiled native: generated C++ shared object that evaluates the combinational operation list in dense passes; flip-flop edge/state handling remains in the common simulator core.
 
-The native backend is not a separate semantic implementation of sequential elements. It shares the exact edge-detection and simultaneous-state-update code with interpreted mode. The tests compare all three backends against the scalar dense reference for deterministic input sequences.
+The native backend is not a separate semantic implementation of sequential elements. It shares the exact edge-detection and simultaneous-state-update code with the interpreted backends. HybridIR is opt-in and not automatically selected. In feedback regions it follows optimized IR event FIFO ordering. Dense and event-driven executors can settle circuits with multiple stable feedback fixed points to different values; this is an existing order-dependent property of the prototype's bounded combinational feedback model. The test suite compares every public signal after deterministic combinational, sequential and feedback input sequences and records the feedback reference used for each topology.

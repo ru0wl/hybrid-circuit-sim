@@ -1,7 +1,9 @@
 #include "hcs/simulator.hpp"
 #include "hcs/compiler_pipeline.hpp"
+#include "hcs/hardware.hpp"
 
 #include <filesystem>
+#include <array>
 #include <cstdlib>
 #include <iostream>
 #include <random>
@@ -73,6 +75,17 @@ void test_reverse_order_dependency_chain() {
     const auto dense_result = dense.step();
     require(dense_result.converged, "Topologically reordered dense chain should settle in one pass");
     require(dense.signal(signals.back()), "Reverse-order dense chain produced the wrong output");
+
+    hcs::SimulatorConfig hybrid_config;
+    hybrid_config.backend = hcs::Backend::HybridIR;
+    hybrid_config.max_dense_passes = 4;
+    hcs::Simulator hybrid(circuit, hybrid_config);
+    hybrid.set_input(input, true);
+    const auto hybrid_result = hybrid.step();
+    require(hybrid_result.converged && hybrid.signal(signals.back()),
+            "Hybrid topological scheduling failed on a reverse-order dependency chain");
+    for (hcs::SignalId id = 0; id < hybrid.signal_count(); ++id)
+        require(hybrid.signal(id) == dense.signal(id), "Hybrid reverse-order chain observability mismatch");
 
     hcs::SimulatorConfig compiled_config;
     compiled_config.backend = hcs::Backend::Compiled;
@@ -243,6 +256,14 @@ void test_oscillation_limit() {
     hcs::Simulator optimized(circuit, ir_config);
     require(!optimized.step().converged,
             "Optimized IR must preserve non-convergent feedback behavior");
+    hcs::SimulatorConfig hybrid_config;
+    hybrid_config.backend = hcs::Backend::HybridIR;
+    hybrid_config.max_dense_passes = 8;
+    hybrid_config.max_events_per_settle = 8;
+    hcs::Simulator hybrid(circuit, hybrid_config);
+    const auto hybrid_result = hybrid.step();
+    require(!hybrid_result.converged && hybrid_result.events == 8,
+            "Hybrid IR must preserve event-budget handling for non-convergent feedback");
     auto event_config = interpreted(hcs::InterpreterStrategy::EventDriven);
     event_config.max_events_per_settle = 8;
     event_config.enable_profiling = true;
@@ -529,21 +550,27 @@ void test_optimized_ir_event_equivalence_and_randomized() {
         hcs::SimulatorConfig event_cfg = dense_cfg;
         event_cfg.strategy = hcs::InterpreterStrategy::EventDriven;
         hcs::Simulator ir_event(circuit, event_cfg);
+        hcs::SimulatorConfig hybrid_cfg;
+        hybrid_cfg.backend = hcs::Backend::HybridIR;
+        hcs::Simulator ir_hybrid(circuit, hybrid_cfg);
         for (int step = 0; step < 100; ++step) {
             for (const auto input : inputs) {
                 const bool value = (rng() & 1u) != 0;
                 reference.set_input(input, value);
                 ir_dense.set_input(input, value);
                 ir_event.set_input(input, value);
+                ir_hybrid.set_input(input, value);
             }
             const auto rr = reference.step();
             const auto dr = ir_dense.step();
             const auto er = ir_event.step();
-            require(rr.converged && dr.converged && er.converged,
+            const auto hr = ir_hybrid.step();
+            require(rr.converged && dr.converged && er.converged && hr.converged,
                     "Random differential circuit did not converge; seed=" + std::to_string(seed));
             for (hcs::SignalId signal = 0; signal < reference.signal_count(); ++signal) {
                 require(reference.signal(signal) == ir_dense.signal(signal) &&
-                        reference.signal(signal) == ir_event.signal(signal),
+                        reference.signal(signal) == ir_event.signal(signal) &&
+                        reference.signal(signal) == ir_hybrid.signal(signal),
                         "Random differential mismatch; seed=" + std::to_string(seed) +
                         " circuit=" + std::to_string(circuit_index) +
                         " step=" + std::to_string(step) +
@@ -587,6 +614,9 @@ void test_randomized_sequential_differential() {
         auto event_cfg = dense_cfg;
         event_cfg.strategy = hcs::InterpreterStrategy::EventDriven;
         hcs::Simulator ir_event(circuit, event_cfg);
+        hcs::SimulatorConfig hybrid_cfg;
+        hybrid_cfg.backend = hcs::Backend::HybridIR;
+        hcs::Simulator ir_hybrid(circuit, hybrid_cfg);
         hcs::SimulatorConfig native_cfg;
         native_cfg.backend = hcs::Backend::Compiled;
         native_cfg.native_options.cache_directory = cache_dir;
@@ -598,18 +628,20 @@ void test_randomized_sequential_differential() {
                 reference.set_input(input, value);
                 ir_dense.set_input(input, value);
                 ir_event.set_input(input, value);
+                ir_hybrid.set_input(input, value);
                 native.set_input(input, value);
             }
-            for (auto* simulator : {&reference, &ir_dense, &ir_event, &native}) simulator->set_input(clock, true);
-            for (auto* simulator : {&reference, &ir_dense, &ir_event, &native}) {
+            for (auto* simulator : {&reference, &ir_dense, &ir_event, &ir_hybrid, &native}) simulator->set_input(clock, true);
+            for (auto* simulator : {&reference, &ir_dense, &ir_event, &ir_hybrid, &native}) {
                 const auto result = simulator->step();
                 require(result.converged, "Random sequential circuit did not converge; seed=" + std::to_string(seed));
             }
-            for (auto* simulator : {&reference, &ir_dense, &ir_event, &native}) simulator->set_input(clock, false);
-            for (auto* simulator : {&reference, &ir_dense, &ir_event, &native}) (void)simulator->step();
+            for (auto* simulator : {&reference, &ir_dense, &ir_event, &ir_hybrid, &native}) simulator->set_input(clock, false);
+            for (auto* simulator : {&reference, &ir_dense, &ir_event, &ir_hybrid, &native}) (void)simulator->step();
             for (hcs::SignalId signal = 0; signal < reference.signal_count(); ++signal) {
                 const bool expected = reference.signal(signal);
-                require(ir_dense.signal(signal) == expected && ir_event.signal(signal) == expected && native.signal(signal) == expected,
+                require(ir_dense.signal(signal) == expected && ir_event.signal(signal) == expected &&
+                        ir_hybrid.signal(signal) == expected && native.signal(signal) == expected,
                         "Random sequential differential mismatch; seed=" + std::to_string(seed) +
                         " circuit=" + std::to_string(circuit_index) + " step=" + std::to_string(step) +
                         " signal=" + std::to_string(signal));
@@ -631,7 +663,7 @@ void test_simultaneous_dff_updates_and_feedback_dynamic() {
         builder.add_d_flip_flop(q0, clock, q1, false);
         builder.add_d_flip_flop(q1, clock, q2, false);
         const auto circuit = builder.build();
-        for (const auto backend : {hcs::Backend::Interpreted, hcs::Backend::OptimizedIR, hcs::Backend::Compiled}) {
+        for (const auto backend : {hcs::Backend::Interpreted, hcs::Backend::OptimizedIR, hcs::Backend::HybridIR, hcs::Backend::Compiled}) {
             hcs::SimulatorConfig config;
             config.backend = backend;
             config.strategy = hcs::InterpreterStrategy::EventDriven;
@@ -658,7 +690,7 @@ void test_simultaneous_dff_updates_and_feedback_dynamic() {
         builder.add_gate(hcs::LogicOp::Or, held, set, x);
         const auto circuit = builder.build();
         const auto cache = std::filesystem::temp_directory_path() / "hcs-feedback-dynamic-test-cache";
-        for (const auto backend : {hcs::Backend::Interpreted, hcs::Backend::OptimizedIR, hcs::Backend::Compiled}) {
+        for (const auto backend : {hcs::Backend::Interpreted, hcs::Backend::OptimizedIR, hcs::Backend::HybridIR, hcs::Backend::Compiled}) {
             for (const auto strategy : {hcs::InterpreterStrategy::EventDriven, hcs::InterpreterStrategy::Dense}) {
                 if (backend == hcs::Backend::Compiled && strategy == hcs::InterpreterStrategy::Dense) continue;
                 hcs::SimulatorConfig config;
@@ -762,6 +794,154 @@ void test_compiler_statistics_topology() {
             "Compiler statistics opcode counts mismatch");
 }
 
+void test_randomized_feedback_differential() {
+    constexpr std::uint64_t seed = 0x43f09b71ull;
+    std::mt19937_64 rng(seed);
+    hcs::CircuitBuilder builder;
+    std::vector<std::pair<hcs::SignalId, hcs::SignalId>> controls;
+    for (int i = 0; i < 12; ++i) {
+        const auto set = builder.add_input();
+        const auto hold = builder.add_input();
+        const auto state = builder.add_signal();
+        const auto retained = builder.add_binary(hcs::LogicOp::And, state, hold);
+        builder.add_gate(hcs::LogicOp::Or, retained, set, state);
+        controls.emplace_back(set, hold);
+    }
+    const auto circuit = builder.build();
+
+    auto interpreted_dense = interpreted(hcs::InterpreterStrategy::Dense);
+    hcs::Simulator reference(circuit, interpreted_dense);
+    auto interpreted_event = interpreted(hcs::InterpreterStrategy::EventDriven);
+    hcs::Simulator event(circuit, interpreted_event);
+    hcs::SimulatorConfig ir_dense_cfg;
+    ir_dense_cfg.backend = hcs::Backend::OptimizedIR;
+    ir_dense_cfg.strategy = hcs::InterpreterStrategy::Dense;
+    hcs::Simulator ir_dense(circuit, ir_dense_cfg);
+    auto ir_event_cfg = ir_dense_cfg;
+    ir_event_cfg.strategy = hcs::InterpreterStrategy::EventDriven;
+    hcs::Simulator ir_event(circuit, ir_event_cfg);
+    hcs::SimulatorConfig hybrid_cfg;
+    hybrid_cfg.backend = hcs::Backend::HybridIR;
+    hcs::Simulator hybrid(circuit, hybrid_cfg);
+    hcs::SimulatorConfig native_cfg;
+    native_cfg.backend = hcs::Backend::Compiled;
+    native_cfg.native_options.cache_directory = std::filesystem::temp_directory_path() / "hcs-random-feedback-cache";
+    hcs::Simulator native(circuit, native_cfg);
+
+    for (int step = 0; step < 128; ++step) {
+        for (const auto [set, hold] : controls) {
+            const bool set_value = (rng() & 1u) != 0;
+            const bool hold_value = (rng() & 1u) != 0;
+            for (auto* simulator : {&reference, &event, &ir_dense, &ir_event, &hybrid, &native}) {
+                simulator->set_input(set, set_value);
+                simulator->set_input(hold, hold_value);
+            }
+        }
+        for (auto* simulator : {&reference, &event, &ir_dense, &ir_event, &hybrid, &native}) {
+            require(simulator->step().converged,
+                    "Randomized feedback circuit failed to converge; seed=" + std::to_string(seed));
+        }
+        for (hcs::SignalId signal = 0; signal < ir_event.signal_count(); ++signal) {
+            const bool expected = ir_event.signal(signal);
+            require(event.signal(signal) == expected && hybrid.signal(signal) == expected,
+                    "Randomized feedback event-semantics mismatch; seed=" + std::to_string(seed) +
+                    " step=" + std::to_string(step) + " signal=" + std::to_string(signal));
+        }
+    }
+}
+
+void test_hybrid_multiple_interconnected_feedback_sccs() {
+    hcs::CircuitBuilder builder;
+    const auto set = builder.add_input();
+    const auto hold = builder.add_input();
+    const auto x = builder.add_signal();
+    const auto y = builder.add_signal();
+    const auto z = builder.add_signal();
+    const auto x_hold = builder.add_binary(hcs::LogicOp::And, x, hold);
+    const auto y_hold = builder.add_binary(hcs::LogicOp::And, y, hold);
+    const auto z_hold = builder.add_binary(hcs::LogicOp::And, z, hold);
+    builder.add_gate(hcs::LogicOp::Or, x_hold, set, x);
+    builder.add_gate(hcs::LogicOp::Or, y_hold, x, y);
+    builder.add_gate(hcs::LogicOp::Or, z_hold, y, z);
+    const auto circuit = builder.build();
+
+    hcs::SimulatorConfig dense_cfg;
+    dense_cfg.backend = hcs::Backend::OptimizedIR;
+    dense_cfg.strategy = hcs::InterpreterStrategy::Dense;
+    hcs::Simulator dense(circuit, dense_cfg);
+    hcs::SimulatorConfig event_cfg;
+    event_cfg.backend = hcs::Backend::OptimizedIR;
+    event_cfg.strategy = hcs::InterpreterStrategy::EventDriven;
+    hcs::Simulator event(circuit, event_cfg);
+    hcs::SimulatorConfig hybrid_cfg;
+    hybrid_cfg.backend = hcs::Backend::HybridIR;
+    hcs::Simulator hybrid(circuit, hybrid_cfg);
+
+    for (const auto [set_value, hold_value] : {std::pair{true, false}, std::pair{false, true}, std::pair{false, false}}) {
+        for (auto* simulator : {&dense, &event, &hybrid}) {
+            simulator->set_input(set, set_value);
+            simulator->set_input(hold, hold_value);
+            require(simulator->step().converged, "Connected feedback SCCs failed to converge");
+        }
+        for (hcs::SignalId signal = 0; signal < hybrid.signal_count(); ++signal)
+            require(hybrid.signal(signal) == event.signal(signal),
+                    "Hybrid feedback SCC observability mismatch against event reference; signal=" + std::to_string(signal));
+    }
+    require(!hybrid.signal(x) && !hybrid.signal(y) && !hybrid.signal(z),
+            "Connected feedback SCCs did not settle to the expected reset state");
+}
+
+void test_hybrid_dirty_region_scheduling() {
+    hcs::CircuitBuilder builder;
+    const auto active = builder.add_input();
+    const auto inactive = builder.add_input();
+    auto active_tail = active;
+    auto inactive_tail = inactive;
+    for (int i = 0; i < 6; ++i) {
+        const auto control = builder.add_input();
+        active_tail = builder.add_binary(hcs::LogicOp::Xor, active_tail, control);
+    }
+    for (int i = 0; i < 4; ++i) {
+        const auto control = builder.add_input();
+        inactive_tail = builder.add_binary(hcs::LogicOp::Xor, inactive_tail, control);
+    }
+    const auto constant = builder.add_constant(true);
+    const auto circuit = builder.build();
+
+    hcs::SimulatorConfig cfg;
+    cfg.backend = hcs::Backend::HybridIR;
+    cfg.enable_profiling = true;
+    hcs::Simulator hybrid(circuit, cfg);
+    hcs::SimulatorConfig event_cfg;
+    event_cfg.backend = hcs::Backend::OptimizedIR;
+    event_cfg.strategy = hcs::InterpreterStrategy::EventDriven;
+    hcs::Simulator event(circuit, event_cfg);
+
+    for (auto* simulator : {&hybrid, &event}) {
+        simulator->set_input(active, true);
+        require(simulator->step().converged, "Hybrid region initialization failed to converge");
+    }
+    for (hcs::SignalId signal = 0; signal < hybrid.signal_count(); ++signal)
+        require(hybrid.signal(signal) == event.signal(signal), "Hybrid initial observability mismatch");
+
+    const auto before = hybrid.execution_profile();
+    hybrid.set_input(active, false);
+    event.set_input(active, false);
+    require(hybrid.step().converged && event.step().converged, "Sparse region step failed to converge");
+    const auto& after = hybrid.execution_profile();
+    require(after.regions_processed - before.regions_processed == 1,
+            "A change in one independent chain must process exactly one dirty region; before=" + std::to_string(before.regions_processed) + " after=" + std::to_string(after.regions_processed) + " scheduled=" + std::to_string(after.regions_scheduled - before.regions_scheduled));
+    require(after.region_operation_evaluations - before.region_operation_evaluations == 6,
+            "Acyclic dirty regions must evaluate each operation exactly once in topological order");
+    require(after.regions_scheduled - before.regions_scheduled == 1,
+            "A changed input must schedule one region, not each dependent operation");
+    for (hcs::SignalId signal = 0; signal < hybrid.signal_count(); ++signal)
+        require(hybrid.signal(signal) == event.signal(signal), "Hybrid sparse-region observability mismatch");
+    require(hybrid.signal(active_tail) == event.signal(active_tail) &&
+            hybrid.signal(inactive_tail) == event.signal(inactive_tail) && hybrid.signal(constant),
+            "Hybrid lost an observable region or constant signal");
+}
+
 void test_execution_profiling() {
     hcs::CircuitBuilder builder;
     const auto input = builder.add_input();
@@ -816,6 +996,306 @@ void test_optimized_ir_event_dff() {
     }
 }
 
+
+void test_hardware_acceleration_capabilities_and_validation() {
+    const auto capabilities = hcs::detect_hardware_capabilities();
+    require(!capabilities.architecture.empty(), "Hardware detection did not report an architecture");
+    require(capabilities.logical_cpu_count >= 1, "Hardware detection returned zero logical CPUs");
+    require(capabilities.avx2_usable == (capabilities.avx2_cpu_supported && capabilities.avx2_kernel_compiled),
+            "AVX2 usability must reflect both CPU support and whether the kernel was compiled");
+    require(!capabilities.gpu_device_available && !capabilities.vulkan_compute_compiled,
+            "GPU must not be advertised without a compiled Vulkan compute backend");
+
+    hcs::CircuitBuilder builder;
+    const auto input = builder.add_input();
+    (void)builder.add_unary(hcs::LogicOp::Not, input);
+    const auto circuit = builder.build();
+
+    hcs::SimulatorConfig gpu_config;
+    gpu_config.backend = hcs::Backend::HybridIR;
+    gpu_config.acceleration.gpu_enabled = true;
+    bool gpu_rejected = false;
+    try { hcs::Simulator rejected(circuit, gpu_config); }
+    catch (const std::runtime_error&) { gpu_rejected = true; }
+    require(gpu_rejected, "Unavailable GPU execution must be rejected clearly");
+
+    hcs::SimulatorConfig invalid_threads;
+    invalid_threads.backend = hcs::Backend::HybridIR;
+    invalid_threads.acceleration.parallel = hcs::CpuParallelMode::Custom;
+    invalid_threads.acceleration.worker_threads = 0;
+    bool threads_rejected = false;
+    try { hcs::Simulator rejected(circuit, invalid_threads); }
+    catch (const std::invalid_argument&) { threads_rejected = true; }
+    require(threads_rejected, "Custom worker count zero must be rejected");
+
+    if (!capabilities.avx2_usable) {
+        hcs::SimulatorConfig avx_config;
+        avx_config.backend = hcs::Backend::HybridIR;
+        avx_config.acceleration.simd = hcs::SimdMode::AVX2;
+        bool avx_rejected = false;
+        try { hcs::Simulator rejected(circuit, avx_config); }
+        catch (const std::runtime_error&) { avx_rejected = true; }
+        require(avx_rejected, "Explicit unsupported AVX2 must be rejected");
+    }
+}
+
+void test_hybrid_avx2_differential() {
+    hcs::CircuitBuilder builder;
+    constexpr std::size_t lanes = 35;
+    const std::array<hcs::LogicOp, 10> opcodes{
+        hcs::LogicOp::Constant0, hcs::LogicOp::Constant1, hcs::LogicOp::Buffer,
+        hcs::LogicOp::Not, hcs::LogicOp::And, hcs::LogicOp::Or, hcs::LogicOp::Xor,
+        hcs::LogicOp::Nand, hcs::LogicOp::Nor, hcs::LogicOp::Xnor,
+    };
+    std::vector<hcs::SignalId> inputs;
+    std::vector<hcs::SignalId> outputs;
+    for (const auto opcode : opcodes) {
+        for (std::size_t lane = 0; lane < lanes; ++lane) {
+            hcs::SignalId output = hcs::kInvalidSignal;
+            if (opcode == hcs::LogicOp::Constant0 || opcode == hcs::LogicOp::Constant1) {
+                output = builder.add_constant(opcode == hcs::LogicOp::Constant1);
+            } else if (opcode == hcs::LogicOp::Buffer || opcode == hcs::LogicOp::Not) {
+                const auto input = builder.add_input();
+                inputs.push_back(input);
+                output = builder.add_unary(opcode, input);
+            } else {
+                const auto a = builder.add_input();
+                const auto b = builder.add_input();
+                inputs.push_back(a);
+                inputs.push_back(b);
+                output = builder.add_binary(opcode, a, b);
+            }
+            outputs.push_back(output);
+        }
+    }
+    std::vector<hcs::SignalId> reduction = outputs;
+    while (reduction.size() > 1) {
+        std::vector<hcs::SignalId> next;
+        next.reserve((reduction.size() + 1) / 2);
+        for (std::size_t i = 0; i < reduction.size(); i += 2) {
+            if (i + 1 < reduction.size()) next.push_back(builder.add_binary(hcs::LogicOp::Or, reduction[i], reduction[i + 1]));
+            else next.push_back(reduction[i]);
+        }
+        reduction = std::move(next);
+    }
+    const auto circuit = builder.build();
+
+    hcs::SimulatorConfig scalar_config;
+    scalar_config.backend = hcs::Backend::HybridIR;
+    hcs::Simulator scalar(circuit, scalar_config);
+
+    hcs::SimulatorConfig auto_config;
+    auto_config.backend = hcs::Backend::HybridIR;
+    auto_config.acceleration.simd = hcs::SimdMode::Auto;
+    hcs::Simulator automatic(circuit, auto_config);
+    require(automatic.simd_implementation() == hcs::SimdImplementation::Scalar,
+            "SIMD Auto must remain scalar until a consistent workload win is established");
+
+    const auto capabilities = hcs::detect_hardware_capabilities();
+    hcs::SimulatorConfig vector_config;
+    vector_config.backend = hcs::Backend::HybridIR;
+    vector_config.acceleration.simd = capabilities.avx2_usable ? hcs::SimdMode::AVX2 : hcs::SimdMode::Off;
+    hcs::Simulator vectorized(circuit, vector_config);
+
+    std::mt19937 random(0x52A52u);
+    for (unsigned tick = 0; tick < 80; ++tick) {
+        for (const auto input : inputs) {
+            const bool value = (random() & 1u) != 0;
+            scalar.set_input(input, value);
+            vectorized.set_input(input, value);
+        }
+        const auto expected = scalar.step();
+        const auto actual = vectorized.step();
+        require(expected.converged && actual.converged, "AVX2 differential circuit failed to converge");
+        for (hcs::SignalId id = 0; id < scalar.signal_count(); ++id)
+            require(scalar.signal(id) == vectorized.signal(id), "AVX2 changed an observable signal");
+    }
+
+    if (capabilities.avx2_usable) {
+        require(vectorized.simd_implementation() == hcs::SimdImplementation::AVX2,
+                "Explicit AVX2 selection did not activate the AVX2 kernel");
+        require(vectorized.acceleration_stats().simd_batches > 0 &&
+                vectorized.acceleration_stats().simd_operations >= 32,
+                "AVX2 path was selected but no SIMD batches were actually executed");
+
+        hcs::SimulatorConfig profiled_config = vector_config;
+        profiled_config.enable_profiling = true;
+        hcs::Simulator profiled(circuit, profiled_config);
+        require(profiled.simd_implementation() == hcs::SimdImplementation::Scalar &&
+                profiled.worker_thread_count() == 1,
+                "Detailed profiling must select the instrumented scalar path");
+        for (const auto input : inputs) profiled.set_input(input, true);
+        (void)profiled.step();
+        require(profiled.execution_profile().operation_evaluation_count > 0,
+                "Profiling did not record scalar HybridIR operations");
+    }
+}
+
+void test_hybrid_multicore_independent_regions() {
+    hcs::CircuitBuilder builder;
+    constexpr std::size_t regions = 192;
+    constexpr std::size_t depth = 24;
+    const auto shared_control = builder.add_input();
+    std::vector<hcs::SignalId> inputs(regions + 1);
+    inputs[0] = shared_control;
+    for (std::size_t i = 0; i < regions; ++i) {
+        auto signal = builder.add_input();
+        inputs[i + 1] = signal;
+        for (std::size_t stage = 0; stage < depth; ++stage)
+            signal = builder.add_binary(hcs::LogicOp::Xor, signal, shared_control);
+    }
+    const auto circuit = builder.build();
+
+    hcs::SimulatorConfig scalar_config;
+    scalar_config.backend = hcs::Backend::HybridIR;
+    hcs::Simulator scalar(circuit, scalar_config);
+
+    hcs::SimulatorConfig parallel_config;
+    parallel_config.backend = hcs::Backend::HybridIR;
+    parallel_config.acceleration.parallel = hcs::CpuParallelMode::Custom;
+    parallel_config.acceleration.worker_threads = 3;
+    hcs::Simulator parallel(circuit, parallel_config);
+    require(parallel.worker_thread_count() == 3, "Persistent worker pool did not create requested workers");
+
+    std::mt19937 random(0x51A2u);
+    for (unsigned tick = 0; tick < 40; ++tick) {
+        for (const auto input : inputs) {
+            const bool value = (random() & 1u) != 0;
+            scalar.set_input(input, value);
+            parallel.set_input(input, value);
+        }
+        const auto expected = scalar.step();
+        const auto actual = parallel.step();
+        require(expected.converged && actual.converged, "Multicore region circuit failed to converge");
+        require(expected.operations == actual.operations && expected.events == actual.events,
+                "Multicore execution changed HybridIR work accounting");
+        for (hcs::SignalId id = 0; id < scalar.signal_count(); ++id)
+            require(scalar.signal(id) == parallel.signal(id), "Multicore execution changed an observable signal");
+    }
+
+    require(parallel.acceleration_stats().parallel_region_batches > 0 &&
+            parallel.acceleration_stats().parallel_regions >= regions,
+            "Multicore path was selected but no region batch was actually processed in parallel");
+
+    hcs::SimulatorConfig profile_config = parallel_config;
+    profile_config.enable_profiling = true;
+    hcs::Simulator profiled(circuit, profile_config);
+    require(profiled.worker_thread_count() == 1,
+            "Detailed profiling should force serial execution until counters are thread-safe");
+}
+
+
+void test_hybrid_avx2_multicore_combined() {
+    hcs::CircuitBuilder builder;
+    constexpr std::size_t region_count = 16;
+    constexpr std::size_t fanout_width = 256;
+    const auto shared_control = builder.add_input();
+    std::vector<hcs::SignalId> inputs{shared_control};
+    for (std::size_t region = 0; region < region_count; ++region) {
+        const auto root_input = builder.add_input();
+        inputs.push_back(root_input);
+        const auto root = builder.add_binary(hcs::LogicOp::And, shared_control, root_input);
+        std::vector<hcs::SignalId> layer;
+        layer.reserve(fanout_width);
+        for (std::size_t lane = 0; lane < fanout_width; ++lane) {
+            const auto leaf_input = builder.add_input();
+            inputs.push_back(leaf_input);
+            layer.push_back(builder.add_binary(hcs::LogicOp::Xor, root, leaf_input));
+        }
+        while (layer.size() > 1) {
+            std::vector<hcs::SignalId> next;
+            next.reserve((layer.size() + 1) / 2);
+            for (std::size_t i = 0; i < layer.size(); i += 2) {
+                if (i + 1 < layer.size())
+                    next.push_back(builder.add_binary(hcs::LogicOp::Or, layer[i], layer[i + 1]));
+                else
+                    next.push_back(layer[i]);
+            }
+            layer = std::move(next);
+        }
+    }
+    const auto circuit = builder.build();
+
+    hcs::SimulatorConfig scalar_config;
+    scalar_config.backend = hcs::Backend::HybridIR;
+    hcs::Simulator scalar(circuit, scalar_config);
+
+    hcs::SimulatorConfig accelerated_config = scalar_config;
+    accelerated_config.acceleration.parallel = hcs::CpuParallelMode::Custom;
+    accelerated_config.acceleration.worker_threads = 3;
+    const auto capabilities = hcs::detect_hardware_capabilities();
+    if (capabilities.avx2_usable) accelerated_config.acceleration.simd = hcs::SimdMode::AVX2;
+    hcs::Simulator accelerated(circuit, accelerated_config);
+
+    std::mt19937 random(0xA52B17u);
+    for (const auto input : inputs) {
+        const bool value = (random() & 1u) != 0;
+        scalar.set_input(input, value);
+        accelerated.set_input(input, value);
+    }
+    for (unsigned tick = 0; tick < 12; ++tick) {
+        const bool value = (tick & 1u) != 0;
+        scalar.set_input(shared_control, value);
+        accelerated.set_input(shared_control, value);
+        const auto expected = scalar.step();
+        const auto actual = accelerated.step();
+        require(expected.converged && actual.converged,
+                "Combined AVX2/multicore workload failed to converge");
+        require(expected.operations == actual.operations && expected.events == actual.events,
+                "Combined AVX2/multicore execution changed work accounting");
+        for (hcs::SignalId id = 0; id < scalar.signal_count(); ++id)
+            require(scalar.signal(id) == accelerated.signal(id),
+                    "Combined AVX2/multicore execution changed an observable signal");
+    }
+    require(accelerated.acceleration_stats().parallel_region_batches > 0 &&
+            accelerated.acceleration_stats().parallel_regions >= region_count,
+            "Combined acceleration did not enter the multicore region path");
+    if (capabilities.avx2_usable) {
+        require(accelerated.acceleration_stats().simd_batches > 0 &&
+                accelerated.acceleration_stats().simd_operations >= region_count * fanout_width,
+                "Combined acceleration did not execute AVX2 batches in parallel regions");
+    }
+
+    hcs::SimulatorConfig excessive_config = accelerated_config;
+    excessive_config.acceleration.worker_threads = 65;
+    bool excessive_rejected = false;
+    try { hcs::Simulator rejected(circuit, excessive_config); }
+    catch (const std::invalid_argument&) { excessive_rejected = true; }
+    require(excessive_rejected, "Custom worker count above the documented limit must be rejected");
+}
+
+void test_hybrid_multicore_feedback_fallback() {
+    hcs::CircuitBuilder builder;
+    const auto set = builder.add_input();
+    const auto first = builder.add_signal();
+    const auto second = builder.add_signal();
+    builder.add_gate(hcs::LogicOp::Or, first, set, first);
+    builder.add_gate(hcs::LogicOp::Or, second, first, second);
+    const auto out = builder.add_unary(hcs::LogicOp::Buffer, second);
+    const auto circuit = builder.build();
+
+    hcs::SimulatorConfig scalar_config;
+    scalar_config.backend = hcs::Backend::HybridIR;
+    hcs::Simulator scalar(circuit, scalar_config);
+    hcs::SimulatorConfig parallel_config = scalar_config;
+    parallel_config.acceleration.parallel = hcs::CpuParallelMode::Custom;
+    parallel_config.acceleration.worker_threads = 2;
+    hcs::Simulator parallel(circuit, parallel_config);
+    for (unsigned tick = 0; tick < 16; ++tick) {
+        const bool value = (tick & 1u) != 0;
+        scalar.set_input(set, value);
+        parallel.set_input(set, value);
+        const auto a = scalar.step();
+        const auto b = parallel.step();
+        require(a.converged == b.converged, "Multicore feedback fallback changed convergence status");
+        for (hcs::SignalId id = 0; id < scalar.signal_count(); ++id)
+            require(scalar.signal(id) == parallel.signal(id), "Multicore feedback fallback changed signal state");
+    }
+    require(parallel.acceleration_stats().parallel_region_batches == 0,
+            "Feedback regions must not enter the multicore acyclic scheduler");
+    (void)out;
+}
+
 } // namespace
 
 int main() {
@@ -838,11 +1318,19 @@ int main() {
         test_optimized_ir_event_equivalence_and_randomized();
         test_optimized_ir_event_dff();
         test_execution_profiling();
+        test_randomized_feedback_differential();
+        test_hybrid_multiple_interconnected_feedback_sccs();
+        test_hybrid_dirty_region_scheduling();
         test_extended_event_profiling();
         test_simultaneous_dff_updates_and_feedback_dynamic();
         test_large_sequential_scratch_buffer();
         test_randomized_sequential_differential();
         test_compiler_statistics_topology();
+        test_hardware_acceleration_capabilities_and_validation();
+        test_hybrid_avx2_differential();
+        test_hybrid_multicore_independent_regions();
+        test_hybrid_multicore_feedback_fallback();
+        test_hybrid_avx2_multicore_combined();
         std::cout << "All HCS tests passed.\n";
         return 0;
     } catch (const std::exception& error) {

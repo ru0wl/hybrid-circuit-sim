@@ -2,12 +2,12 @@
 
 ## Current architecture
 
-HCS is a one-bit digital logic simulator. The editor is not part of this repository. `CircuitBuilder` creates a compact immutable `Circuit` containing signal IDs, primary-input IDs, a contiguous gate vector, a stable execution-order vector, and D flip-flop descriptors.
+HCS is a one-bit digital logic simulator. The simulation-core architecture described in this document predates the Phase 5 editor layer; the current editor boundary is documented at the end of this file. `CircuitBuilder` creates a compact immutable `Circuit` containing signal IDs, primary-input IDs, a contiguous gate vector, a stable execution-order vector, and D flip-flop descriptors.
 
 ### Existing implementation audit
 
 1. **Circuit representation:** `Circuit` stores a signal count and contiguous vectors for inputs, gates, execution order, and DFFs. IDs are 32-bit integers.
-2. **Components and connections:** each `Gate` stores an opcode, up to two input signal IDs, and one output signal ID. Each DFF stores D, clock, Q, and initial state. There is no general editor-component object model.
+2. **Components and connections:** each `Gate` stores an opcode, up to two input signal IDs, and one output signal ID. Each DFF stores D, clock, Q, and initial state. At the simulation-core layer there is no general editor-component object model; Phase 5 adds a separate `hcs_editor` model above it.
 3. **Signals:** runtime values are normalized `uint8_t` values in a vector indexed by `SignalId`. There are no X/Z values or multi-driver resolution.
 4. **Dependencies:** `CircuitBuilder::build()` maps each driven signal to its gate, derives gate dependencies from input signal drivers, removes duplicate dependency edges, and builds dependent lists.
 5. **Topological sorting:** Kahn's algorithm uses a min-priority queue, making tie order stable by gate ID. Nodes not emitted by Kahn are appended in gate-ID order.
@@ -57,14 +57,15 @@ Cyclic SCC operations are not rewritten by the current passes. Source component 
 
 ## Simulation semantics and compatibility
 
-The original `Interpreted` Dense and EventDriven modes are retained. `OptimizedIR` is an additional opt-in backend with dense and direct event-driven strategies selected through `InterpreterStrategy`. `Compiled` explicitly prepares optimized IR and uses the existing native shared-library loader. DFF edge detection and simultaneous state commit remain in the common `Simulator` core for all backends.
+The original `Interpreted` Dense and EventDriven modes are retained. `OptimizedIR` is an additional opt-in backend with dense and direct event-driven strategies selected through `InterpreterStrategy`. `HybridIR` is an experimental region-dirty executor that operates directly on optimized IR; acyclic regions use one topological pass and feedback regions use local FIFO operation queues. `Compiled` explicitly prepares optimized IR and uses the existing native shared-library loader. DFF edge detection and simultaneous state commit remain in the common `Simulator` core for all backends.
 
 ## Known limitations
 
 - One-bit signals and binary gates only.
 - No explicit primary-output declaration: all signal IDs are observable.
 - No operation fusion; ordinary simulator circuits do not benefit from DCE because every signal is observable.
-- No incremental compile, SIMD, multithreading, buses, nested components, or editor integration.
+- No incremental compile, SIMD, multithreading, buses, or nested custom components in the simulation core.
+- `HybridIR` has topology-dependent performance and remains experimental; weakly connected regions can be large, high fanout/activity can make dirty scheduling more expensive than dense execution, and feedback behavior follows optimized-IR event ordering.
 - Tarjan traversal is recursive; exceptionally deep graphs may require an iterative implementation.
 - Native module loading/building remains Linux-specific.
 
@@ -114,3 +115,50 @@ The optimized IR dense/event executors now evaluate `ir::Operation` directly thr
 ### Memory metrics
 
 The benchmark records `/proc/self/status` `VmRSS` snapshots after simulator setup and after runtime. These are process-wide resident-set snapshots, not exact per-object allocations; allocator retention and already loaded modules can affect them. Native source and `.so` sizes are reported separately from RSS. Unsupported systems report zero for the RSS fields.
+
+
+## Phase 4.2: profiling-guided runtime investigation
+
+The Phase 4.2 source audit found no single unambiguous runtime hot-path change that justified altering the Phase 4.1 architecture. The original interpreted event queue is a reusable vector FIFO with a head index and duplicate-scheduling flags; interpreted fanout remains per-signal contiguous dependency lists. The IR event backend uses byte flags. Both dense interpreters repeatedly traverse their execution order until settle. Optimized IR already evaluates `ir::Operation` directly through its local opcode switch, while native evaluation is generated specialized C++.
+
+`enable_profiling` remains false by default. Detailed profiling is intentionally intrusive because it reads `steady_clock` around fine-grained operation, queue, scheduling, fanout, and signal-update activity. The Phase 4.2 fixed-workload A/B measured a substantial penalty only when profiling was enabled. The unprofiled paths do not perform per-operation clock reads. Additional split profiled/unprofiled loops were tested for the remaining backends but not retained because end-to-end gains were small, mixed, and not repeatable across workloads.
+
+Three independent candidates were rejected after measurement: split profile paths, byte-sized interpreted-event scheduled flags, and CSR fanout storage. The final runtime implementation and public headers are unchanged from Phase 4.1. See [`docs/PHASE4.2_AUDIT.md`](docs/PHASE4.2_AUDIT.md) and [`docs/PERFORMANCE_REPORT_PHASE4.2.md`](docs/PERFORMANCE_REPORT_PHASE4.2.md) for evidence and exact limitations.
+
+The profile's component timers are not hardware performance counters and may overlap; they must not be summed as exclusive percentages. Hardware PMU tools were unavailable. GCC compiler-vectorization diagnostics did not show the main simulator loops as suitable for automatic SIMD, so scalar execution remains the only runtime path.
+
+
+## Phase 4.3: region-dirty hybrid execution
+
+`Backend::HybridIR` (`optimized-ir-hybrid`) is a separate executor over optimized IR. It does not alter `OptimizedIR` Dense/EventDriven or `Compiled` behavior. Region metadata is recalculated from the optimized operation vector because optimization can change operation indices.
+
+The outer scheduler queues unique dirty regions. Acyclic region operation lists are topologically ordered at construction and evaluated once per dirty activation. Feedback regions use a reusable local FIFO of dirty operations; output changes enqueue successor operations with duplicate suppression. The region is not treated as a DAG merely because the analyzer exposes a region object: each component may contain multiple SCCs.
+
+The common DFF two-phase capture/commit logic is unchanged. After every next state has been captured and all Q values committed, changed Q outputs schedule their consumer regions/feedback operations. Public signal values continue to live in the shared signal array and every signal ID remains observable.
+
+The full research, counter definitions, workload results, and known limitations are in [`docs/PHASE4.3_RESEARCH.md`](docs/PHASE4.3_RESEARCH.md) and [`docs/PERFORMANCE_REPORT_PHASE4.3.md`](docs/PERFORMANCE_REPORT_PHASE4.3.md). The backend is opt-in; no auto-selection threshold or default change is made.
+
+
+## Phase 5 GUI and editor boundary
+
+Phase 5 adds the separate `hcs_editor` library and optional SDL3 `hcs_gui` executable without changing the simulation core. `CircuitEditor` stores world-space component geometry, pins, wires and selection. `CircuitRuntime` is the only layer that translates this model into `CircuitBuilder`/`Simulator`, maintains editor-pin to `SignalId` mappings, and exposes live values to the renderer. `SimulationController` schedules calls to the real `Simulator` independently from rendering logic. `Camera2D` owns screen/world transforms. The SDL renderer is a read-only consumer of the model/runtime APIs.
+
+The existing `hcs` CMake link name is preserved as an alias of the explicit `hcs_core` target. `hcs_editor` has no SDL dependency and can be built/tested headlessly. `hcs_gui` is only added when SDL3 is found. See `docs/GUI_ARCHITECTURE.md`, `docs/EDITOR_MODEL.md`, and `docs/HCS_GUI_INTEGRATION.md`.
+
+
+## Phase 5.2: optional hardware execution paths
+
+Phase 5.2 leaves the existing backend architecture intact. `AccelerationConfig` is independent of `Backend`; the new acceleration implementation is wired only into the opt-in `HybridIR` executor. `SimdMode::Off` and `SimdMode::Auto` currently execute scalar code (`Auto` remains scalar because no repeatable AVX2 throughput gain was established). Explicit `SimdMode::AVX2` uses a separately compiled x86 GCC/Clang translation unit. CMake applies `-mavx2` only to `src/hardware/simd_avx2.cpp`; runtime CPU/OS feature detection is required before the kernel can be selected.
+
+For acyclic HybridIR regions, construction precomputes topological levels and opcode-homogeneous batches. Batches of 32 or more operations gather their operands by signal ID, evaluate 32 byte lanes with AVX2, and scatter to the original observable output signals. Other operations and all cyclic regions remain scalar. The core still stores binary `uint8_t` values only.
+
+An opt-in per-simulator persistent `WorkerPool` can execute multiple independent acyclic weak components concurrently. Dispatch uses static contiguous region ranges; the caller participates as a worker. The pool is used only when all queued regions are acyclic, the batch fits the event budget, the region count is at least twice the worker count, and total queued operations are at least 4,096. Any feedback region or smaller workload takes the existing serial path. DFF capture and simultaneous Q commit stay in the common serial `Simulator::step()` implementation. Per-region SIMD statistics are accumulated locally and merged after the worker barrier.
+
+No Vulkan compute executor, shaders, device enumeration or GPU memory transfer path is present. GPU capability fields remain false, the GUI reports GPU unavailable, and requesting GPU execution fails explicitly. No placeholder CMake switch is provided. See [`HARDWARE_ACCELERATION_AUDIT.md`](HARDWARE_ACCELERATION_AUDIT.md), [`docs/HARDWARE_ACCELERATION.md`](docs/HARDWARE_ACCELERATION.md), [`docs/SIMD_IMPLEMENTATION.md`](docs/SIMD_IMPLEMENTATION.md), [`docs/MULTICORE_EXECUTION.md`](docs/MULTICORE_EXECUTION.md), and [`docs/GPU_COMPUTE.md`](docs/GPU_COMPUTE.md).
+
+The Phase 5.2 20-repetition A/B benchmark did not establish a reliable AVX2 or multicore speedup across the tested workloads. Both paths therefore remain opt-in and are not selected by automatic heuristics. Historical Phase 4/4.1/4.2/4.3 and Phase 5 artifacts remain unchanged.
+
+
+## Phase 5.3: editor document persistence
+
+The version-1 `.hcs` text format belongs to `hcs_editor`, above the simulator boundary. It stores circuit name, stable component IDs/types/positions, Input values, DFF initial values and symbolic component-pin connections. It deliberately excludes internal `SignalId`, `WireId`/`PinId` allocations, backend choice, simulation ticks, native module cache paths and memory addresses. The parser validates syntax, component properties, IDs, pin direction, references and single-driver input constraints before constructing a temporary editor model. Only a fully valid candidate replaces the active model; the replacement advances model revisions so `CircuitRuntime` rebuilds the ordinary `CircuitBuilder`/`Simulator` path. The serializer sorts by stable IDs/endpoints to produce canonical deterministic text. `hcs_circuit` exposes the same validation/formatting path headlessly. Custom components and subcircuits are intentionally deferred. See [`docs/CIRCUIT_FORMAT.md`](docs/CIRCUIT_FORMAT.md), [`docs/GUI_ARCHITECTURE.md`](docs/GUI_ARCHITECTURE.md) and [`docs/HCS_GUI_INTEGRATION.md`](docs/HCS_GUI_INTEGRATION.md).

@@ -1,0 +1,13 @@
+# A complete two-input XOR circuit.
+# Components and connections are saved independently of simulator signal IDs.
+HCS 1
+circuit "XOR example"
+
+component 10 Input x=80 y=150 value=0
+component 20 Input x=80 y=310 value=1
+component 30 XOR x=320 y=215
+component 40 Output x=560 y=225
+
+wire 10.out -> 30.in0
+wire 20.out -> 30.in1
+wire 30.out -> 40.in

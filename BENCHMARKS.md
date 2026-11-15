@@ -212,4 +212,67 @@ Reproduce the profiler run (profiling is intentionally not a throughput run):
   --output-prefix profiling-results-phase4.1
 ```
 
-`perf` and Valgrind/Callgrind remain unavailable in this environment. Hardware cycles, cache misses, branch misses, call graphs, and exact allocator counts are not claimed. AVX2/AVX-512/NEON, bit-slicing, multithreading, GPU execution, incremental compilation, and IR redesign remain deferred.
+`perf` and Valgrind/Callgrind were unavailable for the Phase 4.1 measurements described above. Hardware cycles, cache misses, branch misses, call graphs, and exact allocator counts were not claimed. At the time of Phase 4.1, AVX2/AVX-512/NEON, bit-slicing, multithreading, GPU execution, incremental compilation, and IR redesign were deferred. Phase 5.2 later added experimental AVX2 and multicore paths; see the section below.
+
+
+## Phase 4.2: profiling-guided audit and controlled experiments
+
+Phase 4.2 preserves all Phase 4/4.1 artifacts and keeps the 13 workload names and six backend configurations unchanged. The full run was generated with GCC 14.2 Release in a 3-vCPU x86-64 KVM environment, with size 256, 5 repetitions for interpreted/warm modes, 3 cold-native repetitions, 1 separate warmup and a 1 ms target. A full 20-run suite did not complete within the execution limit; the completed suite therefore uses 5/3 repetitions, visible in every result row. It contains 78 summary rows and 364 raw samples. Every scenario/backend row is accepted and each scenario has matching step counts and public-signal checksums across backends.
+
+```bash
+./build-gcc/hcs_bench --scenario all --size 256 --iterations 100 \
+  --runs 5 --cold-runs 3 --warmup 1 --min-sample-ms 1 \
+  --max-calibration-iterations 1000000 --compile-mode both \
+  --cache .bench-cache-phase4.2-final \
+  --output-prefix benchmark-results-phase4.2-summary
+```
+
+The full profiling suite was run separately (profiling is not a throughput benchmark):
+
+```bash
+./build-gcc/hcs_bench --scenario all --size 256 --iterations 100 \
+  --runs 3 --cold-runs 1 --warmup 1 --min-sample-ms 0 \
+  --compile-mode both --profile \
+  --cache .bench-cache-phase4.2-profile \
+  --output-prefix profiling-results-phase4.2
+```
+
+This creates 78 profile summary rows and 208 raw samples. Native per-operation counters remain zero because generated native execution is opaque to the current profiler. Profile on/off overhead is available in `profiling-overhead-phase4.2.csv` and `profiling-overhead-phase4.2-raw.csv`; each warm comparison uses 10 measurements per state and each cold comparison uses 3. All pairs use the same 1,000-step sequences and match checksums.
+
+Three isolated candidates were tested and reverted: split more profiled/unprofiled loops; change interpreted-event queue flags from `vector<bool>` to bytes; flatten interpreted fanout to CSR. See `optimization-experiments-phase4.2.csv` and its raw companion. No candidate showed a repeatable gain without regressions. `benchmark-comparison-phase4.1-phase4.2.csv` is explicitly directional and unpaired because Phase 4.1 used 20 runs/4 warmups and a different calibration. Do not treat the percentage column as causal optimization evidence.
+
+An additional 512-DFF run is in `benchmark-results-phase4.2-512dff.csv` and companions. Hardware counters and Callgrind/Cachegrind were unavailable; GCC vectorization diagnostics are discussed in the Phase 4.2 performance report. See [`docs/PHASE4.2_AUDIT.md`](docs/PHASE4.2_AUDIT.md) and [`docs/PERFORMANCE_REPORT_PHASE4.2.md`](docs/PERFORMANCE_REPORT_PHASE4.2.md).
+
+
+## Phase 4.3: region-dirty hybrid executor
+
+Phase 4.3 preserves all 13 Phase 4.2 scenario names and six backend configurations, adds `optimized-ir-hybrid` as a seventh backend, and adds two targeted scenarios: `region-sparse-chains` and `region-high-activity-chains`. The first has many independent small acyclic regions but toggles only one lane; the second toggles all lanes. Neither replaces any historical workload.
+
+The completed full run was produced with GCC 14.2 Release on Linux x86-64/KVM (3 vCPUs), size 256, two warmups, five measured repetitions for interpreted/IR/warm-native modes, one cold-native repetition, and a 1 ms minimum sample target. It contains 105 summary rows (15 scenarios × 7 modes) and 465 raw samples. All rows were accepted; each scenario has the same step count and final all-public-signal checksum across all seven backends. The full raw and summary exports are `benchmark-results-phase4.3-raw.csv` and `benchmark-results-phase4.3-summary.csv`; JSON is `benchmark-results-phase4.3-summary.json`.
+
+Two targeted size-512 region workloads were measured with 20 repetitions per backend. Their complete sample data is preserved in `benchmark-results-phase4.3-region-sparse-chains-20run-*` and `benchmark-results-phase4.3-region-high-activity-chains-20run-*`. Sparse independent chains showed 34.8% higher throughput for hybrid than optimized IR event (median 1.163 ms vs 1.568 ms). With all lanes active, hybrid was 32.7% slower than optimized IR dense (1.791 ms vs 1.205 ms) and 31.8% slower than native warm (1.791 ms vs 1.221 ms).
+
+The profile-enabled data in `profiling-results-phase4.3.csv`, `profiling-results-phase4.3-raw.csv`, and `profiling-results-phase4.3.json` covers the sparse-region and feedback-stable scenarios. It is used for counts (region schedule attempts, regions processed, operation evaluations, fanout traversals, duplicate suppression and queue peaks), not for unprofiled speed ranking. Existing backend profilers take fine-grained clock samples and distort wall time. Hybrid's counters are count-based; timer fields not specifically instrumented by hybrid remain zero.
+
+For hybrid, `StepResult.operations` counts operation evaluations. `StepResult.events` is backend-specific: one processed acyclic region counts as one event; each processed feedback operation from a local FIFO counts as one event. `max_events_per_settle` bounds this combined work unit. The profile distinguishes `regions_processed`, `region_operation_evaluations`, `maximum_dirty_region_queue`, and `maximum_queue_length` (the local feedback operation queue). Do not compare hybrid `events` directly to a pure event backend as though each unit had identical cost.
+
+`benchmark-comparison-phase4.2-phase4.3.csv` contains 78 matched scenario/backend rows for the six existing modes. It is directional/unpaired: each phase calibrated iteration counts independently, so step counts and checksums differ. Do not treat it as a fixed-workload A/B experiment.
+
+See [`docs/PHASE4.3_RESEARCH.md`](docs/PHASE4.3_RESEARCH.md) for algorithm and limitations and [`docs/PERFORMANCE_REPORT_PHASE4.3.md`](docs/PERFORMANCE_REPORT_PHASE4.3.md) for every scenario's timing and relative throughput. The backend is retained for research only; it is not auto-selected.
+
+
+## Phase 5.2 hardware acceleration A/B
+
+Build the additional hardware microbenchmark with the normal CMake build (it is included when `HCS_BUILD_BENCHMARKS=ON`) and run:
+
+```bash
+./build/hcs_hardware_bench 20
+# or
+make bench-hardware BENCH_RUNS=20 HCS_BUILD_GUI=OFF
+```
+
+The hardware benchmark runs four HybridIR workloads: 256 independent chains, a 4,096-operation same-level gate layer, 16 independent wide DAG regions, and 8 larger independent wide DAG regions. Each is measured in scalar, explicit AVX2, two-total-worker, and AVX2-plus-two-worker configurations (AVX2 configurations are skipped when unavailable). Configuration order is rotated by repetition. Each configuration uses a separate warm-up simulator and measured simulator with the same tick count and deterministic inputs. The harness rejects differing all-signal checksums or operation counts.
+
+It records raw and summary CSV files: median/mean/min/max/stddev/P95 elapsed time, ticks/s, operations and operations/s, simulator setup time, process CPU time from `std::clock()` and the derived process CPU percentage, selected worker count, and actual SIMD batch/operation and parallel batch/region counters. Process CPU percentage is an approximate process-level metric, not per-worker utilization. The benchmark does not report GPU metrics because no GPU backend is implemented. It does not claim exact worker utilization, RSS by accelerator, or hardware PMU counters.
+
+Current Phase 5.2 results were collected with 20 repetitions in a virtualized Intel Xeon Platinum 8573C x86-64 guest exposing 3 logical CPUs under a 2-CPU cgroup quota. All 320 raw samples across the four workloads had identical per-workload checksums and operation counts between configurations. Results did not establish reliable AVX2 or multicore improvements; therefore AVX2 Auto remains scalar and multicore stays Off by default. Raw data, summary distribution and paired scalar comparisons are in `hardware-bench-results-phase5.2-raw.csv`, `hardware-bench-results-phase5.2-summary.csv`, and `hardware-bench-results-phase5.2-paired.csv`. See `docs/SIMD_IMPLEMENTATION.md` and `docs/MULTICORE_EXECUTION.md` for paired per-workload conclusions and limitations.

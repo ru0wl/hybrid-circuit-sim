@@ -18,18 +18,20 @@ BENCH_COMPILE_MODE ?= both
 BENCH_CACHE ?= .bench-cache
 BENCH_OUTPUT_PREFIX ?= benchmark-results
 BENCH_PROFILE ?= 0
+HCS_BUILD_GUI ?= ON
+HCS_ENABLE_AVX2 ?= ON
 BENCH_NATIVE_COMPILER ?= c++
 BENCH_OPTIMIZATION_FLAG ?= -O2
 BENCH_ARGS ?= --scenario $(BENCH_SCENARIO) --size $(BENCH_SIZE) --iterations $(BENCH_ITERATIONS) --runs $(BENCH_RUNS) --cold-runs $(BENCH_COLD_RUNS) --warmup $(BENCH_WARMUP) --min-sample-ms $(BENCH_MIN_SAMPLE_MS) --max-calibration-iterations $(BENCH_MAX_CALIBRATION_ITERATIONS) --compile-mode $(BENCH_COMPILE_MODE) --cache $(BENCH_CACHE) --output-prefix $(BENCH_OUTPUT_PREFIX) --native-compiler $(BENCH_NATIVE_COMPILER) --optimization-flag $(BENCH_OPTIMIZATION_FLAG) $(if $(filter 1,$(BENCH_PROFILE)),--profile,)
 
 CMAKE_GENERATOR_ARG := $(if $(strip $(GENERATOR)),-G "$(GENERATOR)",)
 
-.PHONY: all configure build test run bench clean rebuild help
+.PHONY: all configure build test run gui bench bench-hardware clean rebuild help
 
 all: build
 
 configure:
-	$(CMAKE) -S . -B $(BUILD_DIR) $(CMAKE_GENERATOR_ARG) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DHCS_BUILD_TESTS=ON -DHCS_BUILD_BENCHMARKS=ON
+	$(CMAKE) -S . -B $(BUILD_DIR) $(CMAKE_GENERATOR_ARG) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DHCS_BUILD_TESTS=ON -DHCS_BUILD_BENCHMARKS=ON -DHCS_BUILD_GUI=$(HCS_BUILD_GUI) -DHCS_ENABLE_AVX2=$(HCS_ENABLE_AVX2)
 
 build: configure
 	$(CMAKE) --build $(BUILD_DIR) --parallel $(JOBS)
@@ -40,8 +42,16 @@ test: build
 run: build
 	./$(BUILD_DIR)/hcs_demo
 
+gui:
+	$(CMAKE) -S . -B $(BUILD_DIR) $(CMAKE_GENERATOR_ARG) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DHCS_BUILD_TESTS=ON -DHCS_BUILD_BENCHMARKS=ON -DHCS_BUILD_GUI=ON -DHCS_REQUIRE_SDL3=ON -DHCS_ENABLE_AVX2=$(HCS_ENABLE_AVX2)
+	$(CMAKE) --build $(BUILD_DIR) --target hcs_gui --parallel $(JOBS)
+	./$(BUILD_DIR)/hcs_gui
+
 bench: build
 	./$(BUILD_DIR)/hcs_bench $(BENCH_ARGS)
+
+bench-hardware: build
+	./$(BUILD_DIR)/hcs_hardware_bench $(BENCH_RUNS)
 
 clean:
 	$(CMAKE) -E rm -rf $(BUILD_DIR)
@@ -55,8 +65,12 @@ help:
 	  'Targets:' \
 	  '  make              Configure and build Release' \
 	  '  make test         Build and run tests' \
-	  '  make run          Build and run demo' \
+	  '  make run          Build and run CLI demo' \
+	  '  hcs_circuit validate FILE.hcs  Validate a circuit document' \
+	  '  hcs_circuit format FILE.hcs   Print canonical circuit text' \
+	  '  make gui          Build and run SDL3 circuit editor' \
 	  '  make bench        Run the complete benchmark suite' \
+	  '  make bench-hardware Run SIMD/multicore A/B microbenchmarks' \
 	  '  make clean        Remove the selected build directory' \
 	  '  make rebuild      Clean and rebuild' \
 	  '  make help         Show this help' \
@@ -73,6 +87,7 @@ help:
 	  '  BENCH_COMPILE_MODE=both  both, warm, or cold' \
 	  '  BENCH_PROFILE=1          Enable intrusive runtime profiling' \
 	  '  BENCH_NATIVE_COMPILER=c++ Native compiler executable' \
+	  '  HCS_ENABLE_AVX2=ON       Build isolated runtime-detected AVX2 kernel' \
 	  '  BENCH_OPTIMIZATION_FLAG=-O2 Native optimization flag' \
 	  '  BENCH_CACHE=.bench-cache Native cache directory' \
 	  '  BENCH_OUTPUT_PREFIX=benchmark-results Output file prefix' \
