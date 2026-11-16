@@ -91,11 +91,11 @@ The profile suite uses only three runs and is intentionally not used for through
 
 ## Phase 4 comparison and uncertainty
 
-`benchmark-comparison-phase4-phase4.1.csv` contains 72 scenario/backend pairs. The historical `feedback-heavy` workload is mapped to `feedback-stable`. This is a directional comparison rather than a paired A/B: Phase 4 and Phase 4.1 were collected at different times, with 5 ms and 1 ms sample targets respectively. The CSV includes old/new medians, throughput deltas, and an approximate two-standard-error filter based on per-run standard deviations. Because it is not paired and the sample target changed, the filter must not be interpreted as a formal significance test. Use the controlled sequential comparison for stronger conclusions.
+`../benchmark-results/benchmark-comparison-phase4-phase4.1.csv` contains 72 scenario/backend pairs. The historical `feedback-heavy` workload is mapped to `feedback-stable`. This is a directional comparison rather than a paired A/B: Phase 4 and Phase 4.1 were collected at different times, with 5 ms and 1 ms sample targets respectively. The CSV includes old/new medians, throughput deltas, and an approximate two-standard-error filter based on per-run standard deviations. Because it is not paired and the sample target changed, the filter must not be interpreted as a formal significance test. Use the controlled sequential comparison for stronger conclusions.
 
 ## Event queue metrics: Phase 4 versus Phase 4.1
 
-`profiling-comparison-phase4-phase4.1.csv` compares the shared Phase 4 counters against the final raw sample of the Phase 4.1 three-run profile batch. The profile runs used the same 100-step iteration count, size 256, and warmup setting. For the preserved feedback workload, `feedback-heavy` maps to `feedback-stable`.
+`../benchmark-results/profiling-comparison-phase4-phase4.1.csv` compares the shared Phase 4 counters against the final raw sample of the Phase 4.1 three-run profile batch. The profile runs used the same 100-step iteration count, size 256, and warmup setting. For the preserved feedback workload, `feedback-heavy` maps to `feedback-stable`.
 
 For the shared deterministic workloads, event counts and queue maxima match: for example, wide-fanout has 25,600 enqueues/dequeues and a maximum queue length of 256 in both versions; binary-counter has 717 processed events and a maximum queue length of 129; the stable feedback workload has 132 processed events and a maximum queue length of 32. Small differences in the old dequeue/evaluation micro-timings are not interpreted as performance changes. Phase 4.1 adds enqueue, fan-out, scheduling, signal-update, and settle timings for which Phase 4 has no directly comparable baseline.
 

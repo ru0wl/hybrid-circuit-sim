@@ -1,4 +1,5 @@
 #include "renderer.hpp"
+#include "symbol_renderer.hpp"
 
 #include <algorithm>
 #include <array>
@@ -114,25 +115,32 @@ void CircuitRenderer::render(SDL_Renderer* renderer,
 
     for (const auto& component : circuit.components()) {
         const auto top_left = camera.world_to_screen(component.position);
-        const auto width = component.size.x * camera.zoom();
-        const auto height = component.size.y * camera.zoom();
+        const auto bounds = editor::CircuitEditor::component_bounds_size(component);
+        const auto width = bounds.x * camera.zoom();
+        const auto height = bounds.y * camera.zoom();
         const auto selected = circuit.is_component_selected(component.id);
         const auto custom = component.type == editor::ComponentType::Custom;
-        fill_rect(renderer, top_left.x, top_left.y, width, height,
-                  custom ? SDL_Color{44, 56, 78, 255} : kComponentFill);
-        outline_rect(renderer, top_left.x, top_left.y, width, height,
-                     selected ? kSelection : (custom ? SDL_Color{126, 154, 202, 255} : kComponentBorder));
-
-        if (camera.zoom() >= 0.45F) {
-            const auto label_scale = std::clamp(camera.zoom() * 1.35F, 0.65F, 1.65F);
-            const auto* definition = custom ? library.find(component.definition_id) : nullptr;
-            const std::string label = definition ? definition->name : editor::component_name(component.type);
-            const auto label_size = text_size(label.c_str(), label_scale);
-            auto label_y = top_left.y + (height - label_size.y) * 0.5F;
-            if (component.type == editor::ComponentType::Input || component.type == editor::ComponentType::Output)
-                label_y = top_left.y + 7.0F * camera.zoom();
-            text(renderer, top_left.x + (width - label_size.x) * 0.5F, label_y,
-                 label.c_str(), label_scale, kText);
+        const auto* definition = custom ? library.find(component.definition_id) : nullptr;
+        if (custom && definition) {
+            const editor::SymbolTransform transform{component.rotation_quadrants,
+                component.flip_horizontal, component.flip_vertical};
+            SymbolRenderer::draw(renderer, *definition, top_left, camera.zoom(), transform, true);
+            if (selected) outline_rect(renderer, top_left.x - 2.0F, top_left.y - 2.0F,
+                                       width + 4.0F, height + 4.0F, kSelection);
+        } else {
+            fill_rect(renderer, top_left.x, top_left.y, width, height, kComponentFill);
+            outline_rect(renderer, top_left.x, top_left.y, width, height,
+                         selected ? kSelection : kComponentBorder);
+            if (camera.zoom() >= 0.45F) {
+                const auto label_scale = std::clamp(camera.zoom() * 1.35F, 0.65F, 1.65F);
+                const std::string label = editor::component_name(component.type);
+                const auto label_size = text_size(label.c_str(), label_scale);
+                auto label_y = top_left.y + (height - label_size.y) * 0.5F;
+                if (component.type == editor::ComponentType::Input || component.type == editor::ComponentType::Output)
+                    label_y = top_left.y + 7.0F * camera.zoom();
+                text(renderer, top_left.x + (width - label_size.x) * 0.5F, label_y,
+                     label.c_str(), label_scale, kText);
+            }
         }
 
         if (component.type == editor::ComponentType::Input) {
@@ -152,24 +160,6 @@ void CircuitRenderer::render(SDL_Renderer* renderer,
                  value, scale, state_color(state));
         }
 
-        if (custom && camera.zoom() >= 0.65F) {
-            const auto* definition = library.find(component.definition_id);
-            if (definition) {
-                for (const auto& port : definition->ports) {
-                    const auto& pins = port.direction == editor::PinDirection::Input ? component.inputs : component.outputs;
-                    const auto pin = std::find_if(pins.begin(), pins.end(), [&](const editor::Pin& item) { return item.key == port.id; });
-                    if (pin == pins.end()) continue;
-                    const auto pin_screen = camera.world_to_screen(component.position + pin->local_position);
-                    const auto label_scale = std::clamp(camera.zoom() * 0.65F, 0.55F, 0.9F);
-                    const auto label_size = text_size(port.name.c_str(), label_scale);
-                    const float label_x = port.direction == editor::PinDirection::Input
-                        ? pin_screen.x + 7.0F * camera.zoom()
-                        : pin_screen.x - 7.0F * camera.zoom() - label_size.x;
-                    text(renderer, label_x, pin_screen.y - label_size.y * 0.5F,
-                         port.name.c_str(), label_scale, kMuted);
-                }
-            }
-        }
         if (!custom && camera.zoom() >= 0.65F && !component.inputs.empty()) {
             for (std::size_t i = 0; i < component.inputs.size(); ++i) {
                 const char* pin_label = nullptr;
@@ -180,7 +170,7 @@ void CircuitRenderer::render(SDL_Renderer* renderer,
                          component.type == editor::ComponentType::Xor)
                     pin_label = i == 0 ? "A" : "B";
                 if (pin_label) {
-                    const auto pin_screen = camera.world_to_screen(component.position + component.inputs[i].local_position);
+                    const auto pin_screen = camera.world_to_screen(circuit.pin_world_position(component.inputs[i].id));
                     const auto label_scale = std::clamp(camera.zoom() * 0.8F, 0.65F, 1.0F);
                     const auto label_size = text_size(pin_label, label_scale);
                     text(renderer, pin_screen.x + 8.0F * camera.zoom(),
@@ -191,8 +181,8 @@ void CircuitRenderer::render(SDL_Renderer* renderer,
 
         const auto draw_pins = [&](const std::vector<editor::Pin>& pins) {
             for (const auto& pin : pins) {
-                const auto world = component.position + pin.local_position;
-                draw_pin(renderer, camera.world_to_screen(world), runtime.signal_for_pin(pin.id), camera.zoom());
+                draw_pin(renderer, camera.world_to_screen(circuit.pin_world_position(pin.id)),
+                         runtime.signal_for_pin(pin.id), camera.zoom());
             }
         };
         draw_pins(component.inputs);

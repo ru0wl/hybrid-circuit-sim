@@ -22,6 +22,21 @@ float point_segment_distance_squared(Vec2 p, Vec2 a, Vec2 b) noexcept {
     const Vec2 closest{a.x + ab.x * t, a.y + ab.y * t};
     return squared_distance(p, closest);
 }
+
+Vec2 transform_local(Vec2 point, Vec2 size, const Component& component) noexcept {
+    const Vec2 center{size.x * 0.5F, size.y * 0.5F};
+    point = point - center;
+    if (component.flip_horizontal) point.x = -point.x;
+    if (component.flip_vertical) point.y = -point.y;
+    switch (component.rotation_quadrants % 4U) {
+        case 1: point = {-point.y, point.x}; break;
+        case 2: point = {-point.x, -point.y}; break;
+        case 3: point = {point.y, -point.x}; break;
+        default: break;
+    }
+    const auto bounds = CircuitEditor::component_bounds_size(component);
+    return point + Vec2{bounds.x * 0.5F, bounds.y * 0.5F};
+}
 } // namespace
 
 Pin& CircuitEditor::append_pin(Component& component, PinDirection direction, Vec2 local_position) {
@@ -154,11 +169,13 @@ bool CircuitEditor::add_custom_component_with_id(ComponentId id, std::string def
         pin.key = port.id;
         if (port.direction == PinDirection::Input) {
             const auto slot = static_cast<float>(input_index++ + 1);
-            pin.local_position = {0.0F, std::min(component.size.y - 12.0F, slot * component.size.y / static_cast<float>(input_count + 1))};
+            pin.local_position = port.explicit_position ? port.local_position :
+                Vec2{0.0F, std::min(component.size.y - 12.0F, slot * component.size.y / static_cast<float>(input_count + 1))};
             component.inputs.push_back(std::move(pin));
         } else {
             const auto slot = static_cast<float>(output_index++ + 1);
-            pin.local_position = {component.size.x, std::min(component.size.y - 12.0F, slot * component.size.y / static_cast<float>(output_count + 1))};
+            pin.local_position = port.explicit_position ? port.local_position :
+                Vec2{component.size.x, std::min(component.size.y - 12.0F, slot * component.size.y / static_cast<float>(output_count + 1))};
             component.outputs.push_back(std::move(pin));
         }
     }
@@ -189,6 +206,7 @@ bool CircuitEditor::update_custom_component_layout(std::string_view definition_i
 
     CircuitEditor candidate = *this;
     bool changed = false;
+    bool logical_changed = false;
     for (auto& component : candidate.components_) {
         if (component.type != ComponentType::Custom || component.definition_id != definition_id) continue;
         changed = true;
@@ -208,6 +226,12 @@ bool CircuitEditor::update_custom_component_layout(std::string_view definition_i
                 return port.id == old_pin.key && port.direction == PinDirection::Output;
             });
             if (replacement == ports.end() && has_wire(old_pin)) return false;
+        }
+        for (const auto& old_pin : component.inputs) {
+            if (std::none_of(ports.begin(), ports.end(), [&](const CustomPortLayout& port) { return port.id == old_pin.key && port.direction == PinDirection::Input; })) logical_changed = true;
+        }
+        for (const auto& old_pin : component.outputs) {
+            if (std::none_of(ports.begin(), ports.end(), [&](const CustomPortLayout& port) { return port.id == old_pin.key && port.direction == PinDirection::Output; })) logical_changed = true;
         }
 
         std::vector<Pin> new_inputs;
@@ -231,15 +255,16 @@ bool CircuitEditor::update_custom_component_layout(std::string_view definition_i
                 pin.direction = port.direction;
                 pin.key = port.id;
                 pin.simulation_signal = kInvalidSignal;
+                logical_changed = true;
             }
             if (port.direction == PinDirection::Input) {
                 const float slot = static_cast<float>(++input_index);
-                pin.local_position = {0.0F, std::min(size.y - 12.0F,
+                pin.local_position = port.explicit_position ? port.local_position : Vec2{0.0F, std::min(size.y - 12.0F,
                     slot * size.y / static_cast<float>(input_count + 1))};
                 new_inputs.push_back(std::move(pin));
             } else {
                 const float slot = static_cast<float>(++output_index);
-                pin.local_position = {size.x, std::min(size.y - 12.0F,
+                pin.local_position = port.explicit_position ? port.local_position : Vec2{size.x, std::min(size.y - 12.0F,
                     slot * size.y / static_cast<float>(output_count + 1))};
                 new_outputs.push_back(std::move(pin));
             }
@@ -252,11 +277,15 @@ bool CircuitEditor::update_custom_component_layout(std::string_view definition_i
     components_ = std::move(candidate.components_);
     wires_ = std::move(candidate.wires_);
     next_pin_id_ = candidate.next_pin_id_;
-    for (auto& component : components_) {
-        for (auto& pin : component.inputs) pin.simulation_signal = kInvalidSignal;
-        for (auto& pin : component.outputs) pin.simulation_signal = kInvalidSignal;
+    if (logical_changed) {
+        for (auto& component : components_) {
+            for (auto& pin : component.inputs) pin.simulation_signal = kInvalidSignal;
+            for (auto& pin : component.outputs) pin.simulation_signal = kInvalidSignal;
+        }
+        mark_structure_changed();
+    } else {
+        mark_document_changed();
     }
-    mark_structure_changed();
     return true;
 }
 
@@ -287,6 +316,41 @@ bool CircuitEditor::move_component(ComponentId id, Vec2 position) {
         mark_document_changed();
     }
     return true;
+}
+
+bool CircuitEditor::set_component_transform(ComponentId id, std::uint8_t rotation_quadrants,
+                                            bool flip_horizontal, bool flip_vertical) {
+    auto* component = find_component(id);
+    if (!component || component->type != ComponentType::Custom) return false;
+    rotation_quadrants = static_cast<std::uint8_t>(rotation_quadrants % 4U);
+    if (component->rotation_quadrants != rotation_quadrants ||
+        component->flip_horizontal != flip_horizontal || component->flip_vertical != flip_vertical) {
+        component->rotation_quadrants = rotation_quadrants;
+        component->flip_horizontal = flip_horizontal;
+        component->flip_vertical = flip_vertical;
+        mark_document_changed();
+    }
+    return true;
+}
+
+bool CircuitEditor::rotate_component(ComponentId id, int quarter_turns) {
+    auto* component = find_component(id);
+    if (!component || component->type != ComponentType::Custom) return false;
+    const int current = static_cast<int>(component->rotation_quadrants);
+    const int next = ((current + quarter_turns) % 4 + 4) % 4;
+    return set_component_transform(id, static_cast<std::uint8_t>(next), component->flip_horizontal, component->flip_vertical);
+}
+
+bool CircuitEditor::flip_component(ComponentId id, bool horizontal) {
+    auto* component = find_component(id);
+    if (!component || component->type != ComponentType::Custom) return false;
+    return set_component_transform(id, component->rotation_quadrants,
+        horizontal ? !component->flip_horizontal : component->flip_horizontal,
+        horizontal ? component->flip_vertical : !component->flip_vertical);
+}
+
+Vec2 CircuitEditor::component_bounds_size(const Component& component) noexcept {
+    return component.rotation_quadrants % 2U == 0 ? component.size : Vec2{component.size.y, component.size.x};
 }
 
 bool CircuitEditor::set_input_value(ComponentId id, bool value) {
@@ -403,14 +467,15 @@ const Wire* CircuitEditor::find_wire(WireId id) const noexcept {
 Vec2 CircuitEditor::pin_world_position(PinId id) const noexcept {
     const auto* pin = find_pin(id);
     const auto* owner = pin ? find_component(pin->owner) : nullptr;
-    return owner ? owner->position + pin->local_position : Vec2{};
+    return owner ? owner->position + transform_local(pin->local_position, owner->size, *owner) : Vec2{};
 }
 
 std::optional<ComponentId> CircuitEditor::component_at(Vec2 world) const noexcept {
     for (auto it = components_.rbegin(); it != components_.rend(); ++it) {
         const auto& c = *it;
+        const auto bounds = component_bounds_size(c);
         if (world.x >= c.position.x && world.y >= c.position.y &&
-            world.x <= c.position.x + c.size.x && world.y <= c.position.y + c.size.y) return c.id;
+            world.x <= c.position.x + bounds.x && world.y <= c.position.y + bounds.y) return c.id;
     }
     return std::nullopt;
 }
@@ -422,7 +487,7 @@ std::optional<PinId> CircuitEditor::pin_at(Vec2 world, float radius) const noexc
     for (const auto& component : components_) {
         const auto inspect = [&](const std::vector<Pin>& pins) {
             for (const auto& pin : pins) {
-                const auto distance = squared_distance(world, component.position + pin.local_position);
+                const auto distance = squared_distance(world, component.position + transform_local(pin.local_position, component.size, component));
                 if (distance <= best) { best = distance; result = pin.id; }
             }
         };

@@ -19,7 +19,7 @@ The Phase 4.2 benchmark suite contains 13 scenarios × 6 backend configurations 
   --runs 5 --cold-runs 3 --warmup 1 --min-sample-ms 1 \
   --max-calibration-iterations 1000000 --compile-mode both \
   --cache .bench-cache-phase4.2-final \
-  --output-prefix benchmark-results-phase4.2-summary
+  --output-prefix benchmark-results/benchmark-results-phase4.2-summary
 ```
 
 A 20-measured-repetition full-suite attempt exceeded the execution time limit before completing the final scenario; its incomplete output was discarded. The complete suite was rerun with 5 normal/warm repetitions and 3 cold repetitions. Controlled candidate A/B experiments still used 20 repetitions per block (40 baseline plus 40 candidate samples for each scenario/backend row). The lower repetition count applies only to the full 78-row suite and is explicitly present in the CSV fields.
@@ -78,7 +78,7 @@ This experiment isolates the cost of enabling optional detailed profiling. Each 
 
 The high overhead is expected from clock reads around individual operations, signal writes, and event scheduling. It is the cost of **profile-enabled** execution, not profile-disabled execution. Profiling remains disabled by default. The unprofiled event/dense loops still contain some conditional branches; an experiment to split more loops and remove those checks did not demonstrate repeatable gains and was reverted.
 
-The full profiling run (100 iterations per sample, 3 repeats for non-cold, 1 cold) writes `profiling-results-phase4.2.csv`, `profiling-results-phase4.2-raw.csv`, and `profiling-results-phase4.2.json`. Component timings are instrumentation timings, not PMU counters. In some paths accounting intervals can overlap; summing them or interpreting each as an exclusive share of total wall time is invalid. Native operation-level metrics are zero by design because generated evaluation is not instrumented internally.
+The full profiling run (100 iterations per sample, 3 repeats for non-cold, 1 cold) writes `../benchmark-results/profiling-results-phase4.2.csv`, `../benchmark-results/profiling-results-phase4.2-raw.csv`, and `../benchmark-results/profiling-results-phase4.2.json`. Component timings are instrumentation timings, not PMU counters. In some paths accounting intervals can overlap; summing them or interpreting each as an exclusive share of total wall time is invalid. Native operation-level metrics are zero by design because generated evaluation is not instrumented internally.
 
 ## Controlled optimization experiments
 
@@ -90,7 +90,7 @@ Each candidate was applied alone to a disposable source copy, built with the sam
 | `queued_` byte flags instead of `vector<bool>` | −1.18% | −14.46% to +35.80% | Reverted: noisy and strongly workload-dependent. |
 | Flatten interpreted fanout to CSR | +0.22% | −16.95% to +9.38% | Reverted: no reliable improvement on fanout workloads. |
 
-The fast-path split showed modest positive results on some dense/large-sequential rows but negative changes on event/high-switching rows. Byte flags helped some interpreted-event cases but worsened or did not change other workloads and controls. CSR fanout had a −2.2% interpreted-event change on wide-fanout and a −17.0% optimized-IR-event change on large-combinational, while other rows were slightly positive. None was retained. `optimization-experiments-phase4.2.csv` and its `-raw.csv` companion contain full per-row statistics and raw samples.
+The fast-path split showed modest positive results on some dense/large-sequential rows but negative changes on event/high-switching rows. Byte flags helped some interpreted-event cases but worsened or did not change other workloads and controls. CSR fanout had a −2.2% interpreted-event change on wide-fanout and a −17.0% optimized-IR-event change on large-combinational, while other rows were slightly positive. None was retained. `../benchmark-results/optimization-experiments-phase4.2.csv` and its `-raw.csv` companion contain full per-row statistics and raw samples.
 
 ### Why there are no standalone queue/opcode microbenchmarks
 
@@ -98,7 +98,7 @@ The queue, scheduled flags, and operation evaluator are private implementation d
 
 ## Phase 4.1 comparison
 
-`benchmark-comparison-phase4.1-phase4.2.csv` includes all 78 scenario/backend matches. It is deliberately labeled `directional_unpaired_different_run_counts_and_calibration`: Phase 4.1 used 20 repetitions, 4 warmups and a different sample calibration; Phase 4.2 used 5 normal/warm repetitions, 1 warmup and a 1 ms target. It is useful for spotting gross changes, but cannot establish a causal regression or speedup. No runtime code changed in Phase 4.2, so it is not an optimization before/after comparison.
+`../benchmark-results/benchmark-comparison-phase4.1-phase4.2.csv` includes all 78 scenario/backend matches. It is deliberately labeled `directional_unpaired_different_run_counts_and_calibration`: Phase 4.1 used 20 repetitions, 4 warmups and a different sample calibration; Phase 4.2 used 5 normal/warm repetitions, 1 warmup and a 1 ms target. It is useful for spotting gross changes, but cannot establish a causal regression or speedup. No runtime code changed in Phase 4.2, so it is not an optimization before/after comparison.
 
 ## Correctness and builds
 
@@ -120,11 +120,11 @@ The runtime code was not modified in the final tree, so no test was weakened or 
 
 ## Artifacts
 
-- `benchmark-results-phase4.2-summary.csv` — 78-row summary.
-- `benchmark-results-phase4.2-raw.csv` — 364 raw measured samples.
-- `benchmark-results-phase4.2-summary.json` — structured benchmark result.
-- `profiling-results-phase4.2.csv` / `-raw.csv` / `.json` — profiler summary and raw samples.
-- `profiling-overhead-phase4.2.csv` / `-raw.csv` — profile off/on A/B.
-- `optimization-experiments-phase4.2.csv` / `-raw.csv` — rejected candidate comparisons.
-- `benchmark-comparison-phase4.1-phase4.2.csv` — directional historical comparison.
-- `benchmark-results-phase4.2-512dff.csv` / `-raw.csv` / `.json` — additional sequential stress test.
+- `../benchmark-results/benchmark-results-phase4.2-summary.csv` — 78-row summary.
+- `../benchmark-results/benchmark-results-phase4.2-raw.csv` — 364 raw measured samples.
+- `../benchmark-results/benchmark-results-phase4.2-summary.json` — structured benchmark result.
+- `../benchmark-results/profiling-results-phase4.2.csv` / `-raw.csv` / `.json` — profiler summary and raw samples.
+- `../benchmark-results/profiling-overhead-phase4.2.csv` / `-raw.csv` — profile off/on A/B.
+- `../benchmark-results/optimization-experiments-phase4.2.csv` / `-raw.csv` — rejected candidate comparisons.
+- `../benchmark-results/benchmark-comparison-phase4.1-phase4.2.csv` — directional historical comparison.
+- `../benchmark-results/benchmark-results-phase4.2-512dff.csv` / `-raw.csv` / `.json` — additional sequential stress test.

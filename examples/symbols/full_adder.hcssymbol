@@ -1,0 +1,10 @@
+HCSS 1
+size width=200 height=156
+shape rounded_rect id=body x=8 y=8 width=184 height=140 radius=16 start=0 end=360 points="" fill=#202630 stroke=#D0D7E2 stroke_width=2 visible=1 locked=0
+text id=title x=100 y=31 size=14 color=#E0E9F4 align=center role=ui visible=1 locked=0 value="FULL ADDER"
+text id=logic x=100 y=77 size=11 color=#AFC5DD align=center role=code visible=1 locked=0 value="A + B + CIN"
+port id=a x=8 y=48 orientation=left angle=0 label="A" show_label=1 visible=1
+port id=b x=8 y=78 orientation=left angle=0 label="B" show_label=1 visible=1
+port id=cin x=8 y=116 orientation=left angle=0 label="CIN" show_label=1 visible=1
+port id=sum x=192 y=58 orientation=right angle=0 label="SUM" show_label=1 visible=1
+port id=cout x=192 y=106 orientation=right angle=0 label="COUT" show_label=1 visible=1

@@ -16,7 +16,8 @@ BENCH_MIN_SAMPLE_MS ?= 20
 BENCH_MAX_CALIBRATION_ITERATIONS ?= 100000000
 BENCH_COMPILE_MODE ?= both
 BENCH_CACHE ?= .bench-cache
-BENCH_OUTPUT_PREFIX ?= benchmark-results
+BENCH_OUTPUT_DIR ?= benchmark-results
+BENCH_OUTPUT_PREFIX ?= $(BENCH_OUTPUT_DIR)/benchmark-results
 BENCH_PROFILE ?= 0
 HCS_BUILD_GUI ?= ON
 HCS_ENABLE_AVX2 ?= ON
@@ -51,7 +52,7 @@ bench: build
 	./$(BUILD_DIR)/hcs_bench $(BENCH_ARGS)
 
 bench-hardware: build
-	./$(BUILD_DIR)/hcs_hardware_bench $(BENCH_RUNS)
+	./$(BUILD_DIR)/hcs_hardware_bench $(BENCH_RUNS) --output-dir $(BENCH_OUTPUT_DIR)
 
 clean:
 	$(CMAKE) -E rm -rf $(BUILD_DIR)
@@ -90,7 +91,8 @@ help:
 	  '  HCS_ENABLE_AVX2=ON       Build isolated runtime-detected AVX2 kernel' \
 	  '  BENCH_OPTIMIZATION_FLAG=-O2 Native optimization flag' \
 	  '  BENCH_CACHE=.bench-cache Native cache directory' \
-	  '  BENCH_OUTPUT_PREFIX=benchmark-results Output file prefix' \
+	  '  BENCH_OUTPUT_DIR=benchmark-results Directory for all benchmark result files' \
+	  '  BENCH_OUTPUT_PREFIX=benchmark-results/benchmark-results Output file prefix' \
 	  '' \
 	  'Example:' \
 	  '  make bench BENCH_SCENARIO=sparse-toggle BENCH_SIZE=256 BENCH_RUNS=20' \

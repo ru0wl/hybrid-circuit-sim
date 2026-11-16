@@ -62,12 +62,17 @@ struct Component {
     bool input_value{false};
     bool dff_initial_state{false};
     std::string definition_id;
+    std::uint8_t rotation_quadrants{0};
+    bool flip_horizontal{false};
+    bool flip_vertical{false};
 };
 
 struct CustomPortLayout {
     std::string id;
     std::string name;
     PinDirection direction{PinDirection::Input};
+    Vec2 local_position{};
+    bool explicit_position{false};
 };
 
 struct Wire {
@@ -99,6 +104,11 @@ public:
                                                        Vec2 size);
     [[nodiscard]] bool remove_component(ComponentId id);
     [[nodiscard]] bool move_component(ComponentId id, Vec2 position);
+    [[nodiscard]] bool set_component_transform(ComponentId id, std::uint8_t rotation_quadrants,
+                                               bool flip_horizontal, bool flip_vertical);
+    [[nodiscard]] bool rotate_component(ComponentId id, int quarter_turns = 1);
+    [[nodiscard]] bool flip_component(ComponentId id, bool horizontal);
+    [[nodiscard]] static Vec2 component_bounds_size(const Component& component) noexcept;
     [[nodiscard]] bool set_input_value(ComponentId id, bool value);
     [[nodiscard]] bool set_dff_initial_state(ComponentId id, bool value);
     [[nodiscard]] bool toggle_input(ComponentId id);

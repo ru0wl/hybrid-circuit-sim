@@ -139,6 +139,31 @@ Remaining verification and later work:
 - [ ] Add self-contained circuit bundles that include referenced `.hcscomponent` dependencies.
 - [ ] Expose expanded internal-signal/source-instance maps through a debugger/inspection API.
 
+## Phase 5.5 — visual component designer and custom symbol editor
+
+Implemented in the current source tree:
+
+- [x] Renderer-independent symbol model that separates logic, logical interface and visual appearance.
+- [x] Versioned deterministic `HCSS 1` parser/serializer with strict IDs, dimensions, geometry, color, path, text, port and resource-limit validation.
+- [x] Vector primitives: rectangle, rounded rectangle, circle, ellipse, line, polyline, polygon, arc and standalone path.
+- [x] Editable path/polygon vertices, insert/remove/move, path close/open, object move/resize/rotate/duplicate, canvas alignment, layer ordering, visibility and lock state.
+- [x] Visual port endpoints with arbitrary in-bounds coordinates, stable logical port ID matching, labels and cardinal/arbitrary-angle orientation.
+- [x] Text elements with UI/code font roles, colors, size and alignment; corrected text hit bounds, movement, alignment, resize and viewport validation.
+- [x] Bidirectional Visual Designer / HCSS source editing with parse-then-validate-then-apply and invalid-source preservation.
+- [x] Optional HCSS block inside `.hcscomponent`; old HCSC definitions without symbol data retain a generated default symbol.
+- [x] Shared renderer and transformed port endpoints in the root editor, designer and library preview; appearance-only updates do not rebuild the simulator.
+- [x] Five standalone symbol examples and headless model/serialization/backward-compatibility/transform/runtime-isolation tests.
+- [x] Visible object selection/resize handles, live shape/path drawing previews, direct stroke-width/text-size controls, and non-reused generated custom-port IDs.
+- [x] GCC 14.2 Release and Clang 17 Release CMake builds, Makefile `test`, and all five headless CTest suites (5/5 each).
+
+Remaining verification and later work:
+
+- [ ] Build and exercise the real SDL3 GUI on a desktop: drawing, object selection, path vertex dragging, port orientation, HCSS text apply/reload, library preview and transformed wire connections.
+- [ ] Verify real SDL3_ttf font coverage, UI scaling and rendering with installed fonts.
+- [ ] Add undo/redo and a full numeric object property grid if desired.
+- [ ] Add cubic Bézier curves/control handles and snapping to peer objects/contours.
+- [ ] Cache derived geometry if profiling of large real-world symbols demonstrates a need.
+
 ## Phase 5.2 — experimental hardware acceleration
 
 - [x] Audit existing SIMD, compiler-vectorization, threads, region analysis, DFF ordering, GPU dependencies and GUI settings before changes.

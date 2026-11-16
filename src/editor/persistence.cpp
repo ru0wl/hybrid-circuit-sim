@@ -34,6 +34,9 @@ struct ComponentRecord {
     bool input_value{false};
     bool dff_initial_state{false};
     std::string definition_id;
+    std::uint8_t rotation_quadrants{0};
+    bool flip_horizontal{false};
+    bool flip_vertical{false};
     std::size_t line{0};
 };
 
@@ -305,7 +308,8 @@ bool parse_document(std::string_view text, std::string& name,
             }
             for (const auto& [key, value] : fields) {
                 (void)value;
-                if (key != "x" && key != "y" && key != "value" && key != "initial" && key != "definition")
+                if (key != "x" && key != "y" && key != "value" && key != "initial" && key != "definition" &&
+                    key != "rotation" && key != "flip_x" && key != "flip_y")
                     return fail(error, line_number, "unknown component field '" + key + "'");
             }
             const auto x = fields.find("x");
@@ -333,6 +337,20 @@ bool parse_document(std::string_view text, std::string& name,
                     return fail(error, line_number, "field 'definition' is only valid for CUSTOM components");
                 if (definition->second.empty()) return fail(error, line_number, "custom component definition ID cannot be empty");
                 component.definition_id = definition->second;
+            }
+            if (const auto rotation = fields.find("rotation"); rotation != fields.end()) {
+                unsigned parsed{};
+                if (component.type != ComponentType::Custom || !parse_integer(rotation->second, parsed) || parsed > 3U)
+                    return fail(error, line_number, "field 'rotation' is only valid for CUSTOM components and must be 0..3");
+                component.rotation_quadrants = static_cast<std::uint8_t>(parsed);
+            }
+            if (const auto flip = fields.find("flip_x"); flip != fields.end()) {
+                if (component.type != ComponentType::Custom || !parse_bit(flip->second, component.flip_horizontal))
+                    return fail(error, line_number, "field 'flip_x' must be 0 or 1 on CUSTOM components");
+            }
+            if (const auto flip = fields.find("flip_y"); flip != fields.end()) {
+                if (component.type != ComponentType::Custom || !parse_bit(flip->second, component.flip_vertical))
+                    return fail(error, line_number, "field 'flip_y' must be 0 or 1 on CUSTOM components");
             }
             if (component.type == ComponentType::Custom) {
                 if (component.definition_id.empty()) return fail(error, line_number, "CUSTOM component is missing definition=<id>");
@@ -438,7 +456,12 @@ static bool serialize_circuit_impl(const CircuitEditor& circuit, std::string_vie
                << " y=" << float_text(component->position.y);
         if (component->type == ComponentType::Input) output << " value=" << (component->input_value ? 1 : 0);
         if (component->type == ComponentType::DFlipFlop) output << " initial=" << (component->dff_initial_state ? 1 : 0);
-        if (component->type == ComponentType::Custom) output << " definition=" << component->definition_id;
+        if (component->type == ComponentType::Custom) {
+            output << " definition=" << component->definition_id;
+            if (component->rotation_quadrants != 0) output << " rotation=" << static_cast<unsigned>(component->rotation_quadrants);
+            if (component->flip_horizontal) output << " flip_x=1";
+            if (component->flip_vertical) output << " flip_y=1";
+        }
         output << '\n';
     }
     if (!wires.empty()) {
@@ -468,9 +491,11 @@ static bool parse_circuit_impl(std::string_view text, CircuitEditor& destination
             if (!definition) return fail(error, component.line, "missing custom component definition '" + component.definition_id + "'");
             std::vector<CustomPortLayout> ports;
             ports.reserve(definition->ports.size());
-            for (const auto& port : definition->ports) ports.push_back({port.id, port.name, port.direction});
+            ports = custom_component_port_layouts(*definition);
             added = candidate.add_custom_component_with_id(component.id, component.definition_id,
                                                             component.position, ports, definition->size);
+            if (added) added = candidate.set_component_transform(component.id, component.rotation_quadrants,
+                                                                 component.flip_horizontal, component.flip_vertical);
         } else {
             added = candidate.add_component_with_id(component.id, component.type, component.position,
                                                      component.input_value, component.dff_initial_state);

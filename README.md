@@ -122,6 +122,10 @@ The GUI supports multi-selection extraction through **MAKE CUSTOM**, empty defin
 
 Example definitions are in `examples/components/`: Half Adder, Full Adder (requires Half Adder), and DFF Cell. `examples/half_adder_instance.hcs` demonstrates a root circuit that references the Half Adder; use `hcs_circuit ... --library-dir examples/components` to validate, print or format it.
 
+## Visual component symbols (Phase 5.5)
+
+Custom definitions can store an editable vector appearance in an optional `symbol-begin` / `symbol-end` block. The SDL3 editor's **SYMBOL** view provides drawing tools for rectangles, rounded rectangles, circles, ellipses, lines, polygons, paths, arcs and text; ports can be moved to arbitrary symbol coordinates and oriented independently from their logical input/output direction. **SYMBOL TEXT** exposes the same underlying model as deterministic `HCSS 1` text for exact colors, coordinates, stroke widths, text alignment and other properties. Symbol-only changes do not alter the custom component's logic or rebuild the simulator. Old `.hcscomponent` files without a symbol block keep working with a generated default symbol. See [`docs/SYMBOL_DESIGNER.md`](docs/SYMBOL_DESIGNER.md) and the five standalone samples in `examples/symbols/`.
+
 ## Hardware acceleration (Phase 5.2)
 
 The scalar implementation is always available. AVX2 is built in an isolated translation unit on x86 GCC/Clang builds and runtime-detected; the project is not globally compiled with `-mavx2`. AVX2 is available only for wide same-opcode levels inside acyclic HybridIR regions and is explicitly opt-in. `SimdMode::Auto` currently remains scalar because the controlled measurements did not demonstrate a repeatable speedup.
@@ -159,10 +163,12 @@ The native-backend test compiles a generated shared library, verifies its output
 ./build/hcs_bench --scenario all --size 256 --iterations 100 \
   --runs 20 --cold-runs 3 --warmup 4 --min-sample-ms 1 \
   --compile-mode both --cache .bench-cache-phase4.1 \
-  --output-prefix benchmark-results-phase4.1-summary
+  --output-prefix benchmark-results/benchmark-results-phase4.1-summary
 ```
 
 The 13 scenarios are: small/large combinational, binary counter, large sequential, sparse toggle, high switching, deep chain, wide fan-out, repeated expressions, redundant logic, feedback-stable, feedback-dynamic, and independent regions. Each scenario compares interpreted event, interpreted dense, optimized IR dense, optimized IR event, native cold, and native warm.
+
+By default, benchmark CSV/JSON files are written under `benchmark-results/`. The default output prefix is `benchmark-results/benchmark-results`; `make bench-hardware` writes its three CSV files to the same directory. Set `BENCH_OUTPUT_DIR` to change the destination for Makefile targets, or pass `--output-dir` to `hcs_hardware_bench`.
 
 The harness probes each backend independently, calibrates a common iteration count from the fastest backend, validates actual sample durations, and retries the entire scenario with fresh simulators if any sample is too short. It checks final checksums across backends and writes summary CSV, raw-sample CSV, and JSON. Use `--max-calibration-iterations` to cap calibration. Cold native samples use an isolated cache; warm samples must load a validated cache artifact. Interpreted modes do not touch the native cache.
 
@@ -173,10 +179,10 @@ A profile run can be generated with:
 ```bash
 ./build/hcs_bench --scenario all --size 256 --iterations 100 \
   --runs 3 --warmup 1 --min-sample-ms 0 --compile-mode warm \
-  --profile --output-prefix profiling-results-phase4.1
+  --profile --output-prefix benchmark-results/profiling-results-phase4.1
 ```
 
-The Phase 3 and Phase 4 artifacts are preserved. Phase 4.1 adds `benchmark-results-phase4.1-summary.csv`, `benchmark-results-phase4.1-summary-raw.csv`, `benchmark-results-phase4.1-summary.json`, and corresponding `profiling-results-phase4.1.*` files. It also adds Phase 4-to-4.1 and controlled sequential comparisons. See [`BENCHMARKS.md`](BENCHMARKS.md), [`docs/PERFORMANCE_REPORT_PHASE4.md`](docs/PERFORMANCE_REPORT_PHASE4.md), and [`docs/PERFORMANCE_REPORT_PHASE4.1.md`](docs/PERFORMANCE_REPORT_PHASE4.1.md) for methodology, results, and limitations.
+The Phase 3 and Phase 4 artifacts are preserved. Phase 4.1 adds `benchmark-results/benchmark-results-phase4.1-summary.csv`, `benchmark-results/benchmark-results-phase4.1-summary-raw.csv`, `benchmark-results/benchmark-results-phase4.1-summary.json`, and corresponding `benchmark-results/profiling-results-phase4.1.*` files. It also adds Phase 4-to-4.1 and controlled sequential comparisons. See [`BENCHMARKS.md`](BENCHMARKS.md), [`docs/PERFORMANCE_REPORT_PHASE4.md`](docs/PERFORMANCE_REPORT_PHASE4.md), and [`docs/PERFORMANCE_REPORT_PHASE4.1.md`](docs/PERFORMANCE_REPORT_PHASE4.1.md) for methodology, results, and limitations.
 
 To keep generated native code out of the default cache location, use `--cache ./local-native-cache` or set `HCS_CACHE_DIR` / `XDG_CACHE_HOME`.
 
@@ -240,23 +246,23 @@ Compiler preparation can be inspected through `prepare_circuit(circuit)`. It ret
 - [`ARCHITECTURE.md`](ARCHITECTURE.md): verified implementation audit and compiler design.
 - [`ROADMAP.md`](ROADMAP.md): completed and remaining milestones.
 - [`BENCHMARKS.md`](BENCHMARKS.md): benchmark discrepancy audit and reproducible baseline.
-- [`benchmark-results-phase3.csv`](benchmark-results-phase3.csv): preserved historical baseline.
-- [`benchmark-comparison-phase3-phase4.csv`](benchmark-comparison-phase3-phase4.csv): directional comparison on unchanged workload builders.
-- [`benchmark-o2-o3-comparison.csv`](benchmark-o2-o3-comparison.csv): native `-O2` versus `-O3` measurements.
-- [`benchmark-results-phase4.csv`](benchmark-results-phase4.csv): historical Phase 4 12-scenario, 6-mode summary.
-- [`benchmark-results-phase4-raw.csv`](benchmark-results-phase4-raw.csv): raw measured samples.
-- [`benchmark-results-phase4.json`](benchmark-results-phase4.json): structured Phase 4 benchmark results.
-- [`benchmark-results-phase4.1-summary.csv`](benchmark-results-phase4.1-summary.csv): Phase 4.1 summary (78 rows).
-- [`benchmark-results-phase4.1-summary-raw.csv`](benchmark-results-phase4.1-summary-raw.csv): Phase 4.1 raw samples (1,339 rows).
-- [`benchmark-results-phase4.1-summary.json`](benchmark-results-phase4.1-summary.json): structured Phase 4.1 results.
-- [`benchmark-comparison-phase4-phase4.1.csv`](benchmark-comparison-phase4-phase4.1.csv): directional Phase 4 versus Phase 4.1 comparison.
-- [`benchmark-sequential-before-after-phase4.1.csv`](benchmark-sequential-before-after-phase4.1.csv): controlled counter/large-sequential comparison.
-- [`benchmark-scratch-buffer-ab-phase4.1.csv`](benchmark-scratch-buffer-ab-phase4.1.csv): scratch-buffer enabled/disabled A/B.
-- [`profiling-comparison-phase4-phase4.1.csv`](profiling-comparison-phase4-phase4.1.csv): common profiler-counter comparison.
-- [`profiling-results-phase4.csv`](profiling-results-phase4.csv): historical Phase 4 runtime profiling counters.
-- [`profiling-results-phase4.1.csv`](profiling-results-phase4.1.csv): expanded Phase 4.1 profiler summary.
-- [`profiling-results-phase4.1-raw.csv`](profiling-results-phase4.1-raw.csv): raw Phase 4.1 profiling samples.
-- [`profiling-results-phase4.1.json`](profiling-results-phase4.1.json): structured Phase 4.1 profiling output.
+- [`benchmark-results/benchmark-results-phase3.csv`](benchmark-results/benchmark-results-phase3.csv): preserved historical baseline.
+- [`benchmark-results/benchmark-comparison-phase3-phase4.csv`](benchmark-results/benchmark-comparison-phase3-phase4.csv): directional comparison on unchanged workload builders.
+- [`benchmark-results/benchmark-o2-o3-comparison.csv`](benchmark-results/benchmark-o2-o3-comparison.csv): native `-O2` versus `-O3` measurements.
+- [`benchmark-results/benchmark-results-phase4.csv`](benchmark-results/benchmark-results-phase4.csv): historical Phase 4 12-scenario, 6-mode summary.
+- [`benchmark-results/benchmark-results-phase4-raw.csv`](benchmark-results/benchmark-results-phase4-raw.csv): raw measured samples.
+- [`benchmark-results/benchmark-results-phase4.json`](benchmark-results/benchmark-results-phase4.json): structured Phase 4 benchmark results.
+- [`benchmark-results/benchmark-results-phase4.1-summary.csv`](benchmark-results/benchmark-results-phase4.1-summary.csv): Phase 4.1 summary (78 rows).
+- [`benchmark-results/benchmark-results-phase4.1-summary-raw.csv`](benchmark-results/benchmark-results-phase4.1-summary-raw.csv): Phase 4.1 raw samples (1,339 rows).
+- [`benchmark-results/benchmark-results-phase4.1-summary.json`](benchmark-results/benchmark-results-phase4.1-summary.json): structured Phase 4.1 results.
+- [`benchmark-results/benchmark-comparison-phase4-phase4.1.csv`](benchmark-results/benchmark-comparison-phase4-phase4.1.csv): directional Phase 4 versus Phase 4.1 comparison.
+- [`benchmark-results/benchmark-sequential-before-after-phase4.1.csv`](benchmark-results/benchmark-sequential-before-after-phase4.1.csv): controlled counter/large-sequential comparison.
+- [`benchmark-results/benchmark-scratch-buffer-ab-phase4.1.csv`](benchmark-results/benchmark-scratch-buffer-ab-phase4.1.csv): scratch-buffer enabled/disabled A/B.
+- [`benchmark-results/profiling-comparison-phase4-phase4.1.csv`](benchmark-results/profiling-comparison-phase4-phase4.1.csv): common profiler-counter comparison.
+- [`benchmark-results/profiling-results-phase4.csv`](benchmark-results/profiling-results-phase4.csv): historical Phase 4 runtime profiling counters.
+- [`benchmark-results/profiling-results-phase4.1.csv`](benchmark-results/profiling-results-phase4.1.csv): expanded Phase 4.1 profiler summary.
+- [`benchmark-results/profiling-results-phase4.1-raw.csv`](benchmark-results/profiling-results-phase4.1-raw.csv): raw Phase 4.1 profiling samples.
+- [`benchmark-results/profiling-results-phase4.1.json`](benchmark-results/profiling-results-phase4.1.json): structured Phase 4.1 profiling output.
 - [`docs/PERFORMANCE_REPORT_PHASE4.md`](docs/PERFORMANCE_REPORT_PHASE4.md): historical Phase 4 performance analysis.
 - [`docs/PERFORMANCE_REPORT_PHASE4.1.md`](docs/PERFORMANCE_REPORT_PHASE4.1.md): Phase 4.1 benchmark, profiling, and sequential optimization analysis.
 - [`docs/PHASE4.3_RESEARCH.md`](docs/PHASE4.3_RESEARCH.md): Phase 4.3 executor audit, hybrid scheduling design and limitations.
@@ -288,12 +294,12 @@ See [`docs/PHASE4.2_AUDIT.md`](docs/PHASE4.2_AUDIT.md) for source findings and [
 
 Phase 4.2 artifacts:
 
-- [`benchmark-results-phase4.2-summary.csv`](benchmark-results-phase4.2-summary.csv), [`benchmark-results-phase4.2-raw.csv`](benchmark-results-phase4.2-raw.csv), [`benchmark-results-phase4.2-summary.json`](benchmark-results-phase4.2-summary.json).
-- [`profiling-results-phase4.2.csv`](profiling-results-phase4.2.csv), [`profiling-results-phase4.2-raw.csv`](profiling-results-phase4.2-raw.csv), [`profiling-results-phase4.2.json`](profiling-results-phase4.2.json).
-- [`profiling-overhead-phase4.2.csv`](profiling-overhead-phase4.2.csv) and raw samples.
-- [`optimization-experiments-phase4.2.csv`](optimization-experiments-phase4.2.csv) and raw samples for all three rejected candidates.
-- [`benchmark-comparison-phase4.1-phase4.2.csv`](benchmark-comparison-phase4.1-phase4.2.csv), a directional rather than paired comparison.
-- `benchmark-results-phase4.2-512dff.csv` and related raw/JSON results for an additional 512-DFF stress run.
+- [`benchmark-results/benchmark-results-phase4.2-summary.csv`](benchmark-results/benchmark-results-phase4.2-summary.csv), [`benchmark-results/benchmark-results-phase4.2-raw.csv`](benchmark-results/benchmark-results-phase4.2-raw.csv), [`benchmark-results/benchmark-results-phase4.2-summary.json`](benchmark-results/benchmark-results-phase4.2-summary.json).
+- [`benchmark-results/profiling-results-phase4.2.csv`](benchmark-results/profiling-results-phase4.2.csv), [`benchmark-results/profiling-results-phase4.2-raw.csv`](benchmark-results/profiling-results-phase4.2-raw.csv), [`benchmark-results/profiling-results-phase4.2.json`](benchmark-results/profiling-results-phase4.2.json).
+- [`benchmark-results/profiling-overhead-phase4.2.csv`](benchmark-results/profiling-overhead-phase4.2.csv) and raw samples.
+- [`benchmark-results/optimization-experiments-phase4.2.csv`](benchmark-results/optimization-experiments-phase4.2.csv) and raw samples for all three rejected candidates.
+- [`benchmark-results/benchmark-comparison-phase4.1-phase4.2.csv`](benchmark-results/benchmark-comparison-phase4.1-phase4.2.csv), a directional rather than paired comparison.
+- `benchmark-results/benchmark-results-phase4.2-512dff.csv` and related raw/JSON results for an additional 512-DFF stress run.
 
 
 ## Phase 4.3: experimental region-dirty execution
@@ -302,4 +308,4 @@ Phase 4.3 adds a separate `Backend::HybridIR` without changing the existing inte
 
 The full benchmark retains all 13 previous scenarios and six backend configurations, adds two region-focused scenarios, and adds `optimized-ir-hybrid` as a seventh backend: 105 summary rows and 465 accepted raw samples. A targeted size-512 experiment with 20 repetitions measured 34.8% higher throughput than optimized IR event on sparse independent chains; high-activity execution remains slower than optimized dense and native warm. Hybrid stays experimental and is never selected automatically.
 
-See [`docs/PHASE4.3_RESEARCH.md`](docs/PHASE4.3_RESEARCH.md) and [`docs/PERFORMANCE_REPORT_PHASE4.3.md`](docs/PERFORMANCE_REPORT_PHASE4.3.md). Phase 4.2 and earlier historical files remain unchanged. Benchmark exports: `benchmark-results-phase4.3-summary.csv`, `benchmark-results-phase4.3-raw.csv`, `benchmark-results-phase4.3-summary.json`, `profiling-results-phase4.3.csv` and companions, plus `benchmark-comparison-phase4.2-phase4.3.csv`.
+See [`docs/PHASE4.3_RESEARCH.md`](docs/PHASE4.3_RESEARCH.md) and [`docs/PERFORMANCE_REPORT_PHASE4.3.md`](docs/PERFORMANCE_REPORT_PHASE4.3.md). Phase 4.2 and earlier historical files remain unchanged. Benchmark exports: `benchmark-results/benchmark-results-phase4.3-summary.csv`, `benchmark-results/benchmark-results-phase4.3-raw.csv`, `benchmark-results/benchmark-results-phase4.3-summary.json`, `benchmark-results/profiling-results-phase4.3.csv` and companions, plus `benchmark-results/benchmark-comparison-phase4.2-phase4.3.csv`.

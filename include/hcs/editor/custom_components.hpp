@@ -2,6 +2,7 @@
 
 #include "hcs/editor/model.hpp"
 #include "hcs/editor/persistence.hpp"
+#include "hcs/editor/symbol.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -32,6 +33,7 @@ struct CustomComponentDefinition {
     Vec2 size{150.0F, 84.0F};
     std::vector<CustomPort> ports;
     CircuitEditor implementation;
+    SymbolDefinition symbol;
 };
 
 struct ComponentMetadata {
@@ -55,6 +57,7 @@ public:
     [[nodiscard]] std::vector<const CustomComponentDefinition*> definitions() const;
     [[nodiscard]] std::vector<ComponentMetadata> catalog() const;
     [[nodiscard]] std::uint64_t revision() const noexcept { return revision_; }
+    [[nodiscard]] std::uint64_t logic_revision() const noexcept { return logic_revision_; }
 
     [[nodiscard]] static std::filesystem::path default_directory();
     [[nodiscard]] bool load_directory(const std::filesystem::path& directory,
@@ -65,6 +68,7 @@ public:
 private:
     std::map<std::string, CustomComponentDefinition, std::less<>> definitions_;
     std::uint64_t revision_{1};
+    std::uint64_t logic_revision_{1};
 };
 
 struct HierarchyLimits {
@@ -142,5 +146,6 @@ struct ExpandedCircuit {
     CustomComponentDefinition definition, PersistenceError& error);
 
 [[nodiscard]] std::string make_definition_id(std::string_view name);
+[[nodiscard]] std::vector<CustomPortLayout> custom_component_port_layouts(const CustomComponentDefinition& definition);
 
 } // namespace hcs::editor

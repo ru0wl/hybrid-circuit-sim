@@ -307,7 +307,28 @@ void write_results(const std::vector<Sample>& samples, const std::filesystem::pa
 int main(int argc, char** argv) {
     try {
         std::uint32_t runs = 20;
-        if (argc > 1) runs = static_cast<std::uint32_t>(std::stoul(argv[1]));
+        std::filesystem::path output_directory{"benchmark-results"};
+        bool positional_runs_seen = false;
+        for (int i = 1; i < argc; ++i) {
+            const std::string arg = argv[i];
+            const auto value = [&](const char* option) -> std::string {
+                if (i + 1 >= argc) throw std::invalid_argument(std::string("Missing value for ") + option);
+                return argv[++i];
+            };
+            if (arg == "--runs") {
+                runs = static_cast<std::uint32_t>(std::stoul(value("--runs")));
+            } else if (arg == "--output-dir") {
+                output_directory = value("--output-dir");
+            } else if (!arg.empty() && arg.front() != '-' && !positional_runs_seen) {
+                runs = static_cast<std::uint32_t>(std::stoul(arg));
+                positional_runs_seen = true;
+            } else if (arg == "--help") {
+                std::cout << "hcs_hardware_bench [runs] [--runs N] [--output-dir DIR]\n";
+                return 0;
+            } else {
+                throw std::invalid_argument("Unknown argument: " + arg);
+            }
+        }
         if (runs < 3 || runs > 100) throw std::invalid_argument("runs must be in [3, 100]");
         const auto capabilities = hcs::detect_hardware_capabilities();
         const auto workers = std::max<std::uint32_t>(1, std::min<std::uint32_t>(2, capabilities.logical_cpu_count));
@@ -353,8 +374,9 @@ int main(int argc, char** argv) {
                 }
             }
         }
-        write_results(samples, ".");
-        std::cout << "Wrote hardware-bench-results-phase5.2-{raw,summary,paired}.csv\n";
+        write_results(samples, output_directory);
+        std::cout << "Wrote hardware-bench-results-phase5.2-{raw,summary,paired}.csv in "
+                  << output_directory << '\n';
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "Hardware benchmark failed: " << error.what() << '\n';

@@ -1,0 +1,8 @@
+HCSS 1
+size width=190 height=150
+shape polygon id=body x=0 y=0 width=0 height=0 radius=0 start=0 end=360 points="45,8;145,18;184,72;142,132;38,142;8,74" fill=#26384C stroke=#8DB8E8 stroke_width=3 visible=1 locked=0
+text id=title x=96 y=70 size=13 color=#FFFFFF align=center role=ui visible=1 locked=0 value="CUSTOM"
+text id=subtitle x=96 y=91 size=9 color=#BFD7F2 align=center role=code visible=1 locked=0 value="POLYGON"
+port id=enable x=8 y=74 orientation=left angle=0 label="EN" show_label=1 visible=1
+port id=data x=145 y=18 orientation=angle angle=-25 label="DATA" show_label=1 visible=1
+port id=result x=184 y=72 orientation=right angle=0 label="OUT" show_label=1 visible=1

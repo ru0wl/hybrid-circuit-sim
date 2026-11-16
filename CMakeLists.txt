@@ -47,6 +47,7 @@ add_library(hcs_editor
     src/editor/model.cpp
     src/editor/persistence.cpp
     src/editor/custom_components.cpp
+    src/editor/symbol.cpp
     src/editor/runtime.cpp
     src/editor/simulation_controller.cpp
     src/editor/camera.cpp
@@ -85,6 +86,11 @@ if(HCS_BUILD_TESTS)
     target_link_libraries(hcs_custom_component_tests PRIVATE hcs_editor)
     target_compile_definitions(hcs_custom_component_tests PRIVATE HCS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(NAME hcs_custom_component_tests COMMAND hcs_custom_component_tests)
+
+    add_executable(hcs_symbol_tests tests/test_symbol.cpp)
+    target_link_libraries(hcs_symbol_tests PRIVATE hcs_editor)
+    target_compile_definitions(hcs_symbol_tests PRIVATE HCS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME hcs_symbol_tests COMMAND hcs_symbol_tests)
 endif()
 
 if(HCS_BUILD_BENCHMARKS)
@@ -102,6 +108,7 @@ if(HCS_BUILD_GUI)
         add_executable(hcs_gui
             gui/application.cpp
             gui/renderer.cpp
+            gui/symbol_renderer.cpp
             gui/font_manager.cpp
         )
         target_include_directories(hcs_gui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/gui)

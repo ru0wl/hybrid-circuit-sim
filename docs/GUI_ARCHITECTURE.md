@@ -79,6 +79,16 @@ The fixed-frequency controller uses an accumulator for 1 Hz, 10 Hz, 60 Hz and 1 
 
 The initial wire route is a straight segment. Routing is intentionally deferred.
 
+## Visual Component Designer (Phase 5.5)
+
+The shared custom-definition editor opens **SYMBOL** to enter Visual Component Designer mode. It uses a left object/port list, central symbol canvas, right selection/property/help panel and a toolbar for vector primitives, path/text tools, logical port creation, snapping, zoom, preset, fill/stroke palette, source view and Save Definition. This is a view over `CustomComponentDefinition::symbol`; it does not make a second visual model or touch the internal simulator graph for appearance-only edits.
+
+`SymbolDefinition` and its `HCSS 1` serializer/parser live in `hcs_editor`. `SymbolRenderer` in the SDL3 GUI is shared between main-canvas custom instances, library thumbnails and designer canvas. It transforms shape points, text anchors and port endpoints through the same instance rotation/flip transform. `CircuitEditor` custom pin layouts take their local positions from these visual port records, so the pin's world position and drawn endpoint remain coincident after component transforms. Hit testing works back in untransformed symbol-local coordinates and uses object contours/ellipse geometry, not just the overall rectangle.
+
+In the designer, drag creates basic shapes and shows a live preview; polygon/path tools collect clicked vertices with a pointer-following contour preview and finish with Enter. Select and drag moves objects/ports; the selected object has a visible lower-right resize handle. `P` enables path vertex editing, Ctrl+click inserts a point on a segment, Delete removes the selected vertex and `C` toggles path closure. `O` cycles cardinal port orientation; Shift+O sets angle mode and left/right adjust by 15 degrees. `R`, `D`, `[ ]`, Home/End, `V`, `L`, `F` and Shift+arrows/H/V provide rotate, duplicate, layer, visibility, lock, fill and canvas-alignment operations. Toolbar buttons adjust stroke width and text size; exact numeric values and arbitrary colors remain available in HCSS text. `E` edits selected text/port labels. `SYMBOL TEXT` or Ctrl+T opens HCSS source; Ctrl+S applies a temporary parsed/validated candidate, Ctrl+R reloads canonical text and Ctrl+T returns to visual mode. The HCSS editor enforces exact correspondence between visual port IDs and the existing logical interface IDs.
+
+The symbol-only update path changes the catalogue's visual revision, not its logic revision. The main frame can therefore render a new appearance without rebuilding or resetting `CircuitRuntime`. Logic/port edits continue through the existing definition validation and runtime synchronization path. See [`SYMBOL_DESIGNER.md`](SYMBOL_DESIGNER.md) for the format and limits.
+
 ## Dependency and build behavior
 
 SDL3 is optional for core/editor-library builds but required for the windowed executable. With SDL3 available, CMake creates `hcs_gui`. If it is missing, CMake emits a warning and still builds the core, CLI tools and tests. Set `HCS_REQUIRE_SDL3=ON` to make absence a configuration error.

@@ -8,7 +8,7 @@ Phase4 fixes the benchmark lifecycle: warmup uses a separate simulator; measured
 
 ## Before/after comparison
 
-An exploratory same-container comparison was made against the phase3 source archive for five workloads whose circuit builders did not change: small-combinational, sparse-toggle, deep-chain, redundant-logic, and independent-regions. Both runs used size 256, 5,000 requested iterations and 10 samples. On those workloads, optimized-IR-dense throughput changed by approximately +65%, +34%, +229%, +11%, and +17%, respectively. The full backend-by-backend values are preserved in `benchmark-comparison-phase3-phase4.csv`.
+An exploratory same-container comparison was made against the phase3 source archive for five workloads whose circuit builders did not change: small-combinational, sparse-toggle, deep-chain, redundant-logic, and independent-regions. Both runs used size 256, 5,000 requested iterations and 10 samples. On those workloads, optimized-IR-dense throughput changed by approximately +65%, +34%, +229%, +11%, and +17%, respectively. The full backend-by-backend values are preserved in `../benchmark-results/benchmark-comparison-phase3-phase4.csv`.
 
 This is directional rather than a strict paired A/B: the phase3 benchmark warmed and then measured the same simulator instance, while phase4 warms a separate instance and resets the measured state. The later phase4 benchmark results are the reliable current baseline; the comparison CSV explicitly records this methodology difference.
 
@@ -23,7 +23,7 @@ This is directional rather than a strict paired A/B: the phase3 benchmark warmed
 
 ## Measured execution comparisons
 
-The phase4 result table is in `BENCHMARKS.md`, with full precision in `benchmark-results-phase4.csv` and raw samples in `benchmark-results-phase4-raw.csv`.
+The phase4 result table is in `BENCHMARKS.md`, with full precision in `../benchmark-results/benchmark-results-phase4.csv` and raw samples in `../benchmark-results/benchmark-results-phase4-raw.csv`.
 
 Event-driven execution is substantially faster than dense on counter, large sequential and feedback-heavy workloads. Dense can win on small combinational and large high-activity workloads. Optimized IR dense beats original dense on all committed scenarios in this run (about 1.5×–4.9×), while optimized IR event is close to original event on sequential counters and faster on multiple combinational workloads.
 

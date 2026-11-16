@@ -1,4 +1,5 @@
 #include "renderer.hpp"
+#include "symbol_renderer.hpp"
 
 #include "hcs/editor/simulation_controller.hpp"
 #include "hcs/editor/persistence.hpp"
@@ -13,11 +14,16 @@
 #include <cctype>
 #include <cstdio>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <set>
 #include <vector>
 #include <filesystem>
+#include <cmath>
+#include <type_traits>
+#include <variant>
 
 namespace {
 using hcs::editor::Camera2D;
@@ -58,6 +64,11 @@ struct Button {
         NewCircuit, OpenCircuit, SaveCircuit, SaveCircuitAs, TextEdit, ApplyText, ReloadText, BackToGraph,
         ToggleLibrary, CreateCustomFromSelection, NewEmptyCustom, EditDefinition,
         SaveDefinition, CancelDefinitionEdit,
+        OpenSymbolDesigner, SymbolBack, SymbolTextMode, SymbolTextApply, SymbolTextReload,
+        SymbolSelect, SymbolRect, SymbolRoundedRect, SymbolCircle, SymbolEllipse, SymbolLine, SymbolPolygon,
+        SymbolPath, SymbolArc, SymbolAddText, SymbolAddInput, SymbolAddOutput, SymbolPreset,
+        SymbolSnap, SymbolFill, SymbolStroke, SymbolZoomIn, SymbolZoomOut,
+        SymbolStrokeDown, SymbolStrokeUp, SymbolTextSizeDown, SymbolTextSizeUp,
     } action;
 };
 
@@ -132,9 +143,13 @@ public:
 private:
     enum class PathMode : std::uint8_t {
         None, Open, SaveAs, DefinitionName, NewDefinitionName,
-        EditDefinitionName, EditDefinitionDescription, EditDefinitionCategory, PortName
+        EditDefinitionName, EditDefinitionDescription, EditDefinitionCategory, PortName,
+        SymbolObjectText, SymbolPortLabel
     };
     enum class DeferredAction : std::uint8_t { None, NewCircuit, OpenCircuit, Demo, Quit, CancelDefinitionEdit };
+    enum class SymbolTool : std::uint8_t { Select, Rectangle, RoundedRectangle, Circle, Ellipse, Line, Polygon, Path, Arc, Text };
+    enum class SymbolDrag : std::uint8_t { None, Object, Resize, Port, Vertex, Draw, Pan };
+    struct SymbolCanvas { Rect rect{}; Vec2 origin{}; float zoom{1.0F}; };
 
     void update_viewport() {
         int width = kInitialWidth;
@@ -311,6 +326,13 @@ private:
                 const auto found = std::find_if(editing_definition_->ports.begin(), editing_definition_->ports.end(),
                     [&](const hcs::editor::CustomPort& port) { return port.id == pending_port_id_; });
                 if (found != editing_definition_->ports.end()) path_buffer_ = found->name;
+            } else if (mode == PathMode::SymbolObjectText && selected_symbol_object_id_) {
+                for (const auto& object : editing_definition_->symbol.objects)
+                    if (const auto* value = std::get_if<hcs::editor::SymbolText>(&object); value && value->id == *selected_symbol_object_id_) path_buffer_ = value->value;
+            } else if (mode == PathMode::SymbolPortLabel && selected_symbol_port_id_) {
+                const auto found = std::find_if(editing_definition_->symbol.ports.begin(), editing_definition_->symbol.ports.end(),
+                    [&](const auto& port) { return port.port_id == *selected_symbol_port_id_; });
+                if (found != editing_definition_->symbol.ports.end()) path_buffer_ = found->label;
             }
         }
         status_message_.clear();
@@ -342,6 +364,35 @@ private:
         root_text_buffer_dirty_before_definition_edit_ = text_buffer_dirty_;
 
         editing_definition_ = std::move(definition);
+        next_input_port_serial_ = 1;
+        next_output_port_serial_ = 1;
+        for (const auto& port : editing_definition_->ports) {
+            const std::string_view prefix = port.direction == hcs::editor::PinDirection::Input ? "input" : "output";
+            if (!port.id.starts_with(prefix)) continue;
+            const std::string_view suffix(port.id.data() + prefix.size(), port.id.size() - prefix.size());
+            if (suffix.empty()) continue;
+            std::size_t parsed = 0;
+            bool numeric = true;
+            for (const char ch : suffix) {
+                if (ch < '0' || ch > '9') { numeric = false; break; }
+                const auto digit = static_cast<std::size_t>(ch - '0');
+                if (parsed > (std::numeric_limits<std::size_t>::max() - digit) / 10U) {
+                    numeric = false;
+                    break;
+                }
+                parsed = parsed * 10U + digit;
+            }
+            if (!numeric || parsed == std::numeric_limits<std::size_t>::max()) continue;
+            auto& next = port.direction == hcs::editor::PinDirection::Input
+                ? next_input_port_serial_ : next_output_port_serial_;
+            next = std::max(next, parsed + 1U);
+        }
+        symbol_designer_mode_ = false;
+        symbol_text_mode_ = false;
+        symbol_text_buffer_dirty_ = false;
+        symbol_text_error_.clear();
+        symbol_zoom_factor_ = 1.0F;
+        symbol_pan_offset_ = {};
         circuit_ = editing_definition_->implementation;
         document_name_ = editing_definition_->name;
         current_path_.clear();
@@ -389,26 +440,56 @@ private:
         begin_definition_edit(std::move(definition));
     }
 
-    void add_definition_port(hcs::editor::PinDirection direction) {
-        if (!editing_definition_) return;
+    bool add_definition_port(hcs::editor::PinDirection direction) {
+        if (!editing_definition_) return false;
         editing_definition_->implementation = circuit_;
-        const auto count = static_cast<std::size_t>(std::count_if(editing_definition_->ports.begin(),
-            editing_definition_->ports.end(), [&](const hcs::editor::CustomPort& port) { return port.direction == direction; }));
-        const auto id = std::string(direction == hcs::editor::PinDirection::Input ? "input" : "output") + std::to_string(count + 1);
-        const auto name = std::string(direction == hcs::editor::PinDirection::Input ? "Input " : "Output ") + std::to_string(count + 1);
+        const std::string id_prefix = direction == hcs::editor::PinDirection::Input ? "input" : "output";
+        const std::string name_prefix = direction == hcs::editor::PinDirection::Input ? "Input " : "Output ";
+        auto& next_serial = direction == hcs::editor::PinDirection::Input
+            ? next_input_port_serial_ : next_output_port_serial_;
+        std::size_t ordinal = next_serial;
+        std::string id;
+        std::string name;
+        const auto occupied = [&](std::size_t candidate) {
+            const auto candidate_id = id_prefix + std::to_string(candidate);
+            const auto candidate_name = name_prefix + std::to_string(candidate);
+            return std::any_of(editing_definition_->ports.begin(), editing_definition_->ports.end(),
+                [&](const hcs::editor::CustomPort& port) {
+                    return port.id == candidate_id ||
+                           (port.direction == direction && port.name == candidate_name);
+                });
+        };
+        while (occupied(ordinal)) {
+            if (ordinal == std::numeric_limits<std::size_t>::max()) {
+                set_status("No generated port ID remains in this editing session.");
+                return false;
+            }
+            ++ordinal;
+        }
+        if (ordinal == std::numeric_limits<std::size_t>::max()) {
+            set_status("No generated port ID remains in this editing session.");
+            return false;
+        }
+        id = id_prefix + std::to_string(ordinal);
+        name = name_prefix + std::to_string(ordinal);
         hcs::editor::PersistenceError error;
         if (!hcs::editor::add_custom_component_port(*editing_definition_, id, name, direction, error)) {
             set_status("Add port failed: " + error.describe());
-            return;
+            return false;
         }
+        next_serial = ordinal + 1U;
         circuit_ = editing_definition_->implementation;
         definition_metadata_dirty_ = true;
         const auto terminal = editing_definition_->ports.back().terminal_component;
         circuit_.select_component(terminal);
         runtime_.invalidate();
         try { runtime_.synchronize(circuit_, library_); }
-        catch (const std::exception& exception) { set_status("Port added; runtime rebuild warning: " + std::string(exception.what())); return; }
+        catch (const std::exception& exception) {
+            set_status("Port added; runtime rebuild warning: " + std::string(exception.what()));
+            return true;
+        }
         set_status("Added " + name + ". Connect its pin to the internal circuit.");
+        return true;
     }
 
     void begin_selected_port_rename() {
@@ -437,8 +518,16 @@ private:
 
     bool save_definition_edit() {
         if (!editing_definition_ || !root_before_definition_edit_) return false;
+        if (symbol_text_mode_ && symbol_text_buffer_dirty_ && !apply_symbol_text()) return false;
+        if (symbol_text_buffer_dirty_) { set_status("Apply or reload the pending symbol text before saving."); return false; }
         auto candidate_definition = *editing_definition_;
         candidate_definition.implementation = circuit_;
+        const bool logic_changed = [&] {
+            auto probe = library_;
+            hcs::editor::PersistenceError probe_error;
+            if (!probe.replace(candidate_definition, probe_error)) return true;
+            return probe.logic_revision() != library_.logic_revision();
+        }();
         auto candidate_library = library_;
         auto candidate_root = *root_before_definition_edit_;
         hcs::editor::PersistenceError error;
@@ -457,21 +546,28 @@ private:
         circuit_ = std::move(candidate_root);
         document_name_ = root_document_name_before_definition_edit_;
         current_path_ = root_current_path_before_definition_edit_;
-        saved_document_revision_ = root_saved_revision_before_definition_edit_;
+        saved_document_revision_ = circuit_.document_revision();
         text_buffer_ = root_text_buffer_before_definition_edit_;
         text_buffer_dirty_ = root_text_buffer_dirty_before_definition_edit_;
         text_mode_ = false;
+        symbol_designer_mode_ = false;
+        symbol_text_mode_ = false;
         editing_definition_.reset();
         root_before_definition_edit_.reset();
         definition_metadata_dirty_ = false;
         pending_port_id_.clear();
-        runtime_.invalidate();
+        symbol_designer_mode_ = false;
+        symbol_text_mode_ = false;
+        symbol_text_buffer_dirty_ = false;
+        if (logic_changed) runtime_.invalidate();
         try {
             runtime_.synchronize(circuit_, library_);
-            controller_.reset(circuit_, library_);
-            controller_.pause();
+            if (logic_changed) {
+                controller_.reset(circuit_, library_);
+                controller_.pause();
+            }
         } catch (const std::exception& exception) {
-            set_status("Definition saved, but runtime rebuild failed: " + std::string(exception.what()));
+            set_status("Definition saved, but runtime synchronization failed: " + std::string(exception.what()));
             return false;
         }
         set_status("Saved custom component definition. Connected instances were migrated by stable port ID.");
@@ -488,6 +584,8 @@ private:
         text_buffer_ = root_text_buffer_before_definition_edit_;
         text_buffer_dirty_ = root_text_buffer_dirty_before_definition_edit_;
         text_mode_ = false;
+        symbol_designer_mode_ = false;
+        symbol_text_mode_ = false;
         editing_definition_.reset();
         definition_metadata_dirty_ = false;
         pending_port_id_.clear();
@@ -625,6 +723,15 @@ private:
                 set_status("Port display name updated; its stable port ID and connections are unchanged.");
             } else set_status("Rename port failed: " + error.describe());
             pending_port_id_.clear();
+        } else if (mode == PathMode::SymbolObjectText && editing_definition_ && selected_symbol_object_id_) {
+            for (auto& object : editing_definition_->symbol.objects)
+                if (auto* value = std::get_if<hcs::editor::SymbolText>(&object); value && value->id == *selected_symbol_object_id_) {
+                    value->value = path.string(); mark_symbol_changed(); set_status("Symbol text object updated."); break;
+                }
+        } else if (mode == PathMode::SymbolPortLabel && editing_definition_ && selected_symbol_port_id_) {
+            if (hcs::editor::set_symbol_port_label(editing_definition_->symbol,*selected_symbol_port_id_,path.string(),true)) {
+                mark_symbol_changed(); set_status("Visual port label updated; logical port name and ID are unchanged.");
+            }
         } else if (mode == PathMode::Open) {
             hcs::editor::PersistenceError error;
             std::string loaded_name;
@@ -664,6 +771,982 @@ private:
         if (save_to_path(path)) {
             after_save_action_ = DeferredAction::None;
             if (continuation != DeferredAction::None) execute_action(continuation);
+        }
+    }
+
+    SymbolCanvas symbol_canvas(int width, int height) const {
+        SymbolCanvas canvas;
+        canvas.rect = {198.0F, 112.0F, std::max(280.0F, static_cast<float>(width) - 420.0F),
+                       std::max(220.0F, static_cast<float>(height) - 190.0F)};
+        if (!editing_definition_) return canvas;
+        const auto& size = editing_definition_->symbol.size;
+        const float fit_x = std::max(1.0F, canvas.rect.width - 64.0F) / std::max(1.0F, size.x);
+        const float fit_y = std::max(1.0F, canvas.rect.height - 64.0F) / std::max(1.0F, size.y);
+        canvas.zoom = std::clamp(std::min(fit_x, fit_y) * symbol_zoom_factor_, 0.25F, 6.0F);
+        const auto transformed = size;
+        canvas.origin = {canvas.rect.x + (canvas.rect.width - transformed.x * canvas.zoom) * 0.5F + symbol_pan_offset_.x,
+                         canvas.rect.y + (canvas.rect.height - transformed.y * canvas.zoom) * 0.5F + symbol_pan_offset_.y};
+        return canvas;
+    }
+
+    Vec2 symbol_screen_to_local(Vec2 screen) const {
+        int width = kInitialWidth, height = kInitialHeight;
+        (void)SDL_GetWindowSize(window_, &width, &height);
+        const auto canvas = symbol_canvas(width, height);
+        return {(screen.x - canvas.origin.x) / canvas.zoom,
+                (screen.y - canvas.origin.y) / canvas.zoom};
+    }
+
+    bool inside_symbol_canvas(Vec2 screen) const {
+        int width = kInitialWidth, height = kInitialHeight;
+        (void)SDL_GetWindowSize(window_, &width, &height);
+        const auto rect = symbol_canvas(width, height).rect;
+        return screen.x >= rect.x && screen.y >= rect.y &&
+               screen.x <= rect.x + rect.width && screen.y <= rect.y + rect.height;
+    }
+
+    Vec2 snap_symbol_point(Vec2 point) const {
+        if (!symbol_snap_ || !editing_definition_) return point;
+        constexpr float grid = 5.0F;
+        point.x = std::round(point.x / grid) * grid;
+        point.y = std::round(point.y / grid) * grid;
+        point.x = std::clamp(point.x, 0.0F, editing_definition_->symbol.size.x);
+        point.y = std::clamp(point.y, 0.0F, editing_definition_->symbol.size.y);
+        return point;
+    }
+
+    std::string next_symbol_object_id() const {
+        if (!editing_definition_) return "object";
+        std::uint32_t suffix = 1;
+        for (;;) {
+            const auto candidate = "object_" + std::to_string(suffix++);
+            const bool used = std::any_of(editing_definition_->symbol.objects.begin(), editing_definition_->symbol.objects.end(),
+                [&](const hcs::editor::SymbolObject& object) {
+                    return std::visit([&](const auto& item) { return item.id == candidate; }, object);
+                });
+            if (!used) return candidate;
+        }
+    }
+
+    void mark_symbol_changed() {
+        if (!editing_definition_) return;
+        editing_definition_->size = editing_definition_->symbol.size;
+        definition_metadata_dirty_ = true;
+        update_window_title();
+    }
+
+    void open_symbol_designer() {
+        if (!editing_definition_) return;
+        symbol_designer_mode_ = true;
+        symbol_text_mode_ = false;
+        symbol_tool_ = SymbolTool::Select;
+        selected_symbol_object_id_.reset();
+        selected_symbol_port_id_.reset();
+        selected_symbol_vertex_index_.reset();
+        symbol_vertex_edit_mode_=false;
+        symbol_pending_points_.clear();
+        symbol_drag_ = SymbolDrag::None;
+        library_panel_ = false;
+        controller_.pause();
+        set_status("Symbol Designer: choose a tool, draw on the canvas, drag ports, or open SYMBOL TEXT.");
+    }
+
+    void close_symbol_designer() {
+        if (symbol_text_buffer_dirty_) {
+            set_status("Unapplied symbol text is preserved. Apply or reload it before leaving the definition editor.");
+            return;
+        }
+        symbol_designer_mode_ = false;
+        symbol_drag_ = SymbolDrag::None;
+        symbol_pending_points_.clear();
+        set_status("Returned to the component logic editor.");
+    }
+
+    void enter_symbol_text_mode() {
+        if (!editing_definition_) return;
+        if (!symbol_text_buffer_dirty_) reload_symbol_text();
+        symbol_text_mode_ = true;
+        SDL_StartTextInput(window_);
+    }
+
+    void leave_symbol_text_mode() {
+        symbol_text_mode_ = false;
+        SDL_StopTextInput(window_);
+        if (symbol_text_buffer_dirty_)
+            set_status("Unapplied symbol text is preserved. Apply it or use RELOAD SYMBOL to discard it.");
+    }
+
+    void reload_symbol_text() {
+        if (!editing_definition_) return;
+        hcs::editor::SymbolError error;
+        std::string generated;
+        if (!hcs::editor::serialize_symbol(editing_definition_->symbol, generated, error)) {
+            symbol_text_error_ = "Cannot serialize symbol: " + error.describe();
+            return;
+        }
+        symbol_text_buffer_ = std::move(generated);
+        symbol_text_cursor_ = symbol_text_buffer_.size();
+        symbol_text_selection_anchor_.reset();
+        symbol_text_buffer_dirty_ = false;
+        symbol_text_error_.clear();
+    }
+
+    bool apply_symbol_text() {
+        if (!editing_definition_) return false;
+        hcs::editor::SymbolDefinition candidate;
+        hcs::editor::SymbolError error;
+        if (!hcs::editor::parse_symbol(symbol_text_buffer_, candidate, error)) {
+            symbol_text_error_ = "Apply failed: " + error.describe();
+            return false;
+        }
+        std::set<std::string> expected, actual;
+        for (const auto& port : editing_definition_->ports) expected.insert(port.id);
+        for (const auto& port : candidate.ports) actual.insert(port.port_id);
+        if (expected != actual) {
+            symbol_text_error_ = "Apply failed: visual port IDs must exactly match the logical component port IDs.";
+            return false;
+        }
+        editing_definition_->symbol = std::move(candidate);
+        editing_definition_->size = editing_definition_->symbol.size;
+        definition_metadata_dirty_ = true;
+        symbol_text_buffer_dirty_ = false;
+        symbol_text_error_.clear();
+        reload_symbol_text();
+        set_status("Applied symbol text. The logical circuit and stable port IDs were preserved.");
+        return true;
+    }
+
+    void insert_symbol_text(std::string_view value) {
+        if (value.empty() || symbol_text_buffer_.size() + value.size() > 4U * 1024U * 1024U) return;
+        if (symbol_text_selection_anchor_) {
+            const auto first = std::min(*symbol_text_selection_anchor_, symbol_text_cursor_);
+            const auto last = std::max(*symbol_text_selection_anchor_, symbol_text_cursor_);
+            symbol_text_buffer_.erase(first, last - first);
+            symbol_text_cursor_ = first;
+            symbol_text_selection_anchor_.reset();
+        }
+        symbol_text_buffer_.insert(symbol_text_cursor_, value);
+        symbol_text_cursor_ += value.size();
+        symbol_text_buffer_dirty_ = true;
+        symbol_text_error_.clear();
+    }
+
+    std::size_t previous_symbol_text_position(std::size_t position) const {
+        if (position == 0) return 0;
+        --position;
+        while (position > 0 && (static_cast<unsigned char>(symbol_text_buffer_[position]) & 0xC0U) == 0x80U) --position;
+        return position;
+    }
+
+    std::size_t next_symbol_text_position(std::size_t position) const {
+        if (position >= symbol_text_buffer_.size()) return symbol_text_buffer_.size();
+        ++position;
+        while (position < symbol_text_buffer_.size() &&
+               (static_cast<unsigned char>(symbol_text_buffer_[position]) & 0xC0U) == 0x80U) ++position;
+        return position;
+    }
+
+    void handle_symbol_text_key(const SDL_KeyboardEvent& event, bool control, bool shift) {
+        if (control && event.key == SDLK_S) { (void)apply_symbol_text(); return; }
+        if (control && event.key == SDLK_R) { reload_symbol_text(); return; }
+        if (control && event.key == SDLK_T) { leave_symbol_text_mode(); return; }
+        if (control && event.key == SDLK_A) { symbol_text_selection_anchor_ = 0; symbol_text_cursor_ = symbol_text_buffer_.size(); return; }
+        if (control && (event.key == SDLK_C || event.key == SDLK_X)) {
+            if (symbol_text_selection_anchor_) {
+                const auto first = std::min(*symbol_text_selection_anchor_, symbol_text_cursor_);
+                const auto last = std::max(*symbol_text_selection_anchor_, symbol_text_cursor_);
+                const auto value = symbol_text_buffer_.substr(first, last - first);
+                (void)SDL_SetClipboardText(value.c_str());
+                if (event.key == SDLK_X) {
+                    symbol_text_buffer_.erase(first, last - first); symbol_text_cursor_ = first;
+                    symbol_text_selection_anchor_.reset(); symbol_text_buffer_dirty_ = true;
+                }
+            }
+            return;
+        }
+        if (control && event.key == SDLK_V) {
+            char* clipboard = SDL_GetClipboardText();
+            if (clipboard) { insert_symbol_text(clipboard); SDL_free(clipboard); }
+            return;
+        }
+        if (event.key == SDLK_ESCAPE) { leave_symbol_text_mode(); return; }
+        if (event.key == SDLK_RETURN || event.key == SDLK_KP_ENTER) { insert_symbol_text("\n"); return; }
+        if (event.key == SDLK_TAB) { insert_symbol_text("  "); return; }
+        if (!shift && symbol_text_selection_anchor_ && (event.key == SDLK_LEFT || event.key == SDLK_RIGHT ||
+            event.key == SDLK_HOME || event.key == SDLK_END)) {
+            symbol_text_cursor_ = event.key == SDLK_LEFT || event.key == SDLK_HOME
+                ? std::min(*symbol_text_selection_anchor_, symbol_text_cursor_)
+                : std::max(*symbol_text_selection_anchor_, symbol_text_cursor_);
+            symbol_text_selection_anchor_.reset();
+        }
+        if (shift && !symbol_text_selection_anchor_) symbol_text_selection_anchor_ = symbol_text_cursor_;
+        switch (event.key) {
+            case SDLK_BACKSPACE:
+            case SDLK_DELETE: {
+                if (symbol_text_selection_anchor_) {
+                    const auto first = std::min(*symbol_text_selection_anchor_, symbol_text_cursor_);
+                    const auto last = std::max(*symbol_text_selection_anchor_, symbol_text_cursor_);
+                    symbol_text_buffer_.erase(first, last-first); symbol_text_cursor_ = first;
+                    symbol_text_selection_anchor_.reset(); symbol_text_buffer_dirty_ = true;
+                } else if (event.key == SDLK_BACKSPACE && symbol_text_cursor_ > 0) {
+                    const auto previous = previous_symbol_text_position(symbol_text_cursor_);
+                    symbol_text_buffer_.erase(previous, symbol_text_cursor_ - previous);
+                    symbol_text_cursor_ = previous; symbol_text_buffer_dirty_ = true;
+                } else if (event.key == SDLK_DELETE && symbol_text_cursor_ < symbol_text_buffer_.size()) {
+                    symbol_text_buffer_.erase(symbol_text_cursor_, next_symbol_text_position(symbol_text_cursor_) - symbol_text_cursor_);
+                    symbol_text_buffer_dirty_ = true;
+                }
+                break;
+            }
+            case SDLK_LEFT: symbol_text_cursor_ = previous_symbol_text_position(symbol_text_cursor_); break;
+            case SDLK_RIGHT: symbol_text_cursor_ = next_symbol_text_position(symbol_text_cursor_); break;
+            case SDLK_HOME: {
+                const auto pos = symbol_text_buffer_.rfind('\n', symbol_text_cursor_ == 0 ? 0 : symbol_text_cursor_-1);
+                symbol_text_cursor_ = pos == std::string::npos ? 0 : pos + 1; break;
+            }
+            case SDLK_END: {
+                const auto pos = symbol_text_buffer_.find('\n', symbol_text_cursor_);
+                symbol_text_cursor_ = pos == std::string::npos ? symbol_text_buffer_.size() : pos; break;
+            }
+            default: break;
+        }
+    }
+
+    void begin_symbol_object_text_edit() {
+        if (!editing_definition_) return;
+        if (selected_symbol_object_id_) {
+            const auto found = std::find_if(editing_definition_->symbol.objects.begin(), editing_definition_->symbol.objects.end(),
+                [&](const hcs::editor::SymbolObject& object) {
+                    return std::visit([&](const auto& item) { return item.id == *selected_symbol_object_id_; }, object);
+                });
+            if (found != editing_definition_->symbol.objects.end()) {
+                if (const auto* text = std::get_if<hcs::editor::SymbolText>(&*found)) begin_path_entry(PathMode::SymbolObjectText), path_buffer_ = text->value;
+                else set_status("The selected object is not a text object.");
+                return;
+            }
+        }
+        if (selected_symbol_port_id_) {
+            const auto port = std::find_if(editing_definition_->symbol.ports.begin(), editing_definition_->symbol.ports.end(),
+                [&](const auto& item) { return item.port_id == *selected_symbol_port_id_; });
+            if (port != editing_definition_->symbol.ports.end()) {
+                begin_path_entry(PathMode::SymbolPortLabel);
+                path_buffer_ = port->label;
+                return;
+            }
+        }
+        set_status("Select a text object or port before pressing E.");
+    }
+
+    void finish_symbol_path() {
+        if (!editing_definition_ || symbol_pending_points_.size() < (symbol_tool_ == SymbolTool::Polygon ? 3U : 2U)) {
+            symbol_pending_points_.clear();
+            return;
+        }
+        const auto id = next_symbol_object_id();
+        if (symbol_tool_ == SymbolTool::Path) {
+            hcs::editor::SymbolPath path;
+            path.id = id;
+            path.points = symbol_pending_points_;
+            editing_definition_->symbol.objects.emplace_back(std::move(path));
+        } else {
+            hcs::editor::SymbolShape shape;
+            shape.id = id;
+            shape.type = symbol_tool_ == SymbolTool::Polygon ? hcs::editor::SymbolShapeType::Polygon : hcs::editor::SymbolShapeType::Polyline;
+            shape.points = symbol_pending_points_;
+            if (shape.type == hcs::editor::SymbolShapeType::Polyline) shape.fill = "none";
+            editing_definition_->symbol.objects.emplace_back(std::move(shape));
+        }
+        selected_symbol_object_id_ = id;
+        selected_symbol_port_id_.reset();
+        symbol_pending_points_.clear();
+        mark_symbol_changed();
+        set_status("Added vector path. Drag its contour vertices in the text source for exact editing; object can be moved as a whole.");
+    }
+
+    void create_symbol_shape_from_drag(Vec2 a, Vec2 b) {
+        if (!editing_definition_) return;
+        a = snap_symbol_point(a); b = snap_symbol_point(b);
+        hcs::editor::SymbolShape shape;
+        shape.id = next_symbol_object_id();
+        shape.x = std::min(a.x, b.x); shape.y = std::min(a.y, b.y);
+        shape.width = std::max(1.0F, std::abs(b.x - a.x));
+        shape.height = std::max(1.0F, std::abs(b.y - a.y));
+        switch (symbol_tool_) {
+            case SymbolTool::Rectangle: shape.type = hcs::editor::SymbolShapeType::Rectangle; break;
+            case SymbolTool::RoundedRectangle: shape.type = hcs::editor::SymbolShapeType::RoundedRectangle; shape.radius = 10.0F; break;
+            case SymbolTool::Circle: {
+                shape.type = hcs::editor::SymbolShapeType::Circle;
+                const auto symbol_size = editing_definition_->symbol.size;
+                const float diameter = std::clamp(std::max(shape.width, shape.height), 1.0F,
+                    std::min(symbol_size.x, symbol_size.y));
+                const float center_x = std::clamp((a.x + b.x) * 0.5F,
+                    diameter * 0.5F, symbol_size.x - diameter * 0.5F);
+                const float center_y = std::clamp((a.y + b.y) * 0.5F,
+                    diameter * 0.5F, symbol_size.y - diameter * 0.5F);
+                shape.width = diameter; shape.height = diameter;
+                shape.x = center_x - diameter * 0.5F; shape.y = center_y - diameter * 0.5F;
+                break;
+            }
+            case SymbolTool::Ellipse: shape.type = hcs::editor::SymbolShapeType::Ellipse; break;
+            case SymbolTool::Line:
+                shape.type = hcs::editor::SymbolShapeType::Line;
+                shape.fill = "none";
+                // Store both endpoints explicitly so negative slopes are preserved.
+                shape.x = a.x; shape.y = a.y; shape.width = 0.0F; shape.height = 0.0F;
+                shape.points = {{a.x, a.y}, {b.x, b.y}};
+                break;
+            case SymbolTool::Arc: shape.type = hcs::editor::SymbolShapeType::Arc; shape.fill = "none"; shape.start_angle = 0.0F; shape.end_angle = 180.0F; break;
+            default: return;
+        }
+        editing_definition_->symbol.objects.emplace_back(shape);
+        selected_symbol_object_id_ = shape.id;
+        selected_symbol_port_id_.reset();
+        mark_symbol_changed();
+    }
+
+    void add_symbol_text_at(Vec2 position) {
+        if (!editing_definition_) return;
+        hcs::editor::SymbolText text;
+        text.id = next_symbol_object_id();
+        text.value = "Label";
+        text.x = position.x; text.y = position.y;
+        selected_symbol_object_id_ = text.id;
+        selected_symbol_port_id_.reset();
+        editing_definition_->symbol.objects.emplace_back(std::move(text));
+        mark_symbol_changed();
+        begin_path_entry(PathMode::SymbolObjectText);
+        path_buffer_ = "Label";
+    }
+
+    void adjust_selected_symbol_stroke(float delta) {
+        if (!editing_definition_ || !selected_symbol_object_id_) return;
+        auto candidate = editing_definition_->symbol;
+        bool changed = false;
+        for (auto& object : candidate.objects) {
+            std::visit([&](auto& item) {
+                using T = std::decay_t<decltype(item)>;
+                if (item.id != *selected_symbol_object_id_) return;
+                if constexpr (std::is_same_v<T, hcs::editor::SymbolShape> ||
+                              std::is_same_v<T, hcs::editor::SymbolPath>) {
+                    item.stroke_width = std::clamp(item.stroke_width + delta, 0.0F, 64.0F);
+                    changed = true;
+                }
+            }, object);
+            if (changed) break;
+        }
+        hcs::editor::SymbolError error;
+        if (changed && hcs::editor::validate_symbol(candidate, error)) {
+            editing_definition_->symbol = std::move(candidate);
+            mark_symbol_changed();
+        } else if (changed) set_status("Stroke width could not be applied: " + error.describe());
+    }
+
+    void adjust_selected_symbol_text_size(float delta) {
+        if (!editing_definition_ || !selected_symbol_object_id_) return;
+        auto candidate = editing_definition_->symbol;
+        bool changed = false;
+        for (auto& object : candidate.objects) {
+            if (auto* text = std::get_if<hcs::editor::SymbolText>(&object);
+                text && text->id == *selected_symbol_object_id_) {
+                text->size = std::clamp(text->size + delta, 4.0F, 128.0F);
+                changed = true;
+                break;
+            }
+        }
+        hcs::editor::SymbolError error;
+        if (changed && hcs::editor::validate_symbol(candidate, error)) {
+            editing_definition_->symbol = std::move(candidate);
+            mark_symbol_changed();
+        } else if (changed) set_status("Text size could not be applied within the symbol bounds.");
+    }
+
+    hcs::editor::SymbolPortOrientation symbol_port_orientation(Vec2 point) const {
+        const auto size = editing_definition_->symbol.size;
+        const float distances[] = {std::abs(point.x), std::abs(size.x-point.x), std::abs(point.y), std::abs(size.y-point.y)};
+        const auto found = static_cast<int>(std::min_element(std::begin(distances), std::end(distances)) - std::begin(distances));
+        switch (found) {
+            case 0: return hcs::editor::SymbolPortOrientation::Left;
+            case 1: return hcs::editor::SymbolPortOrientation::Right;
+            case 2: return hcs::editor::SymbolPortOrientation::Top;
+            default: return hcs::editor::SymbolPortOrientation::Bottom;
+        }
+    }
+
+    void apply_symbol_preset() {
+        if (!editing_definition_) return;
+        static const std::array<std::string_view, 10> presets{
+            "rectangle", "rounded_rect", "circle", "triangle", "and", "or", "xor", "not", "dff", "mux"};
+        symbol_preset_index_ = (symbol_preset_index_ + 1U) % presets.size();
+        std::vector<std::pair<std::string,std::string>> ports;
+        for (const auto& port : editing_definition_->ports)
+            ports.emplace_back(port.id, port.direction == hcs::editor::PinDirection::Input ? "input" : "output");
+        auto symbol = hcs::editor::make_symbol_preset(presets[symbol_preset_index_], editing_definition_->symbol.size, ports);
+        for (auto& visual : symbol.ports) {
+            const auto old = std::find_if(editing_definition_->symbol.ports.begin(), editing_definition_->symbol.ports.end(),
+                [&](const auto& item) { return item.port_id == visual.port_id; });
+            if (old != editing_definition_->symbol.ports.end()) visual.label = old->label;
+        }
+        editing_definition_->symbol = std::move(symbol);
+        selected_symbol_object_id_.reset(); selected_symbol_port_id_.reset();
+        mark_symbol_changed();
+        set_status("Applied editable symbol preset " + std::string(presets[symbol_preset_index_]) + ".");
+    }
+
+    void render_symbol_text_editor() {
+        int width = kInitialWidth, height = kInitialHeight;
+        (void)SDL_GetWindowSize(window_, &width, &height);
+        SDL_SetRenderDrawColor(renderer_, 13, 18, 25, 255);
+        (void)SDL_RenderClear(renderer_);
+        CircuitRenderer::fill_rect(renderer_, 0, 0, static_cast<float>(width), kToolbarHeight, kToolbar);
+        for (const auto& button : buttons()) render_button(button);
+        CircuitRenderer::text(renderer_, 390, 17, "SYMBOL SOURCE  |  HCSS 1  |  CTRL+S APPLY  CTRL+R RELOAD  CTRL+T VISUAL", 0.78F, kMuted);
+        CircuitRenderer::text(renderer_, 16, 86, (editing_definition_ ? editing_definition_->name : "Symbol") .c_str(), 0.9F, kLogicOne);
+        if (!symbol_text_error_.empty()) CircuitRenderer::text(renderer_, 16, 106, symbol_text_error_.c_str(), 0.72F, SDL_Color{255,128,128,255});
+        std::size_t cursor_line = 0, cursor_start = 0;
+        for (std::size_t i=0; i<symbol_text_cursor_ && i<symbol_text_buffer_.size(); ++i)
+            if (symbol_text_buffer_[i]=='\n') { ++cursor_line; cursor_start=i+1; }
+        const auto visible_lines = static_cast<std::size_t>(std::max(1,(height-180)/17));
+        const auto first_line = cursor_line >= visible_lines ? cursor_line-visible_lines+1 : 0;
+        std::size_t line_number=0, line_start=0;
+        float y=130;
+        while (line_start<=symbol_text_buffer_.size() && y<static_cast<float>(height)-35) {
+            const auto nl=symbol_text_buffer_.find('\n',line_start);
+            const auto end=nl==std::string::npos?symbol_text_buffer_.size():nl;
+            if (line_number>=first_line) {
+                const auto number=std::to_string(line_number+1);
+                CircuitRenderer::text(renderer_,16,y,number.c_str(),0.72F,kMuted);
+                const auto line=symbol_text_buffer_.substr(line_start,end-line_start);
+                CircuitRenderer::text(renderer_,64,y,line.c_str(),0.82F,kText,hcs::gui::FontRole::Code);
+                if (line_number==cursor_line && symbol_text_cursor_-cursor_start<=line.size()) {
+                    const auto prefix=line.substr(0,symbol_text_cursor_-cursor_start);
+                    const auto extent=CircuitRenderer::text_size(prefix.c_str(),0.82F,hcs::gui::FontRole::Code);
+                    CircuitRenderer::line(renderer_,{64+extent.x,y-1},{64+extent.x,y+14},kLogicOne);
+                }
+                y+=17;
+            }
+            if (nl==std::string::npos) break;
+            line_start=nl+1; ++line_number;
+        }
+        CircuitRenderer::fill_rect(renderer_,0,static_cast<float>(height)-38,static_cast<float>(width),38,kToolbar);
+        CircuitRenderer::text(renderer_,12,static_cast<float>(height)-26,
+            symbol_text_buffer_dirty_?"UNAPPLIED SYMBOL SOURCE CHANGES":"SYMBOL SOURCE SYNCHRONIZED",0.7F,
+            symbol_text_buffer_dirty_?kLogicOne:kMuted);
+        SDL_RenderPresent(renderer_);
+    }
+
+    const std::vector<hcs::editor::SymbolPoint>* selected_symbol_points() const {
+        if (!editing_definition_ || !selected_symbol_object_id_) return nullptr;
+        for (const auto& object : editing_definition_->symbol.objects) {
+            const auto points = std::visit([](const auto& item) -> const std::vector<hcs::editor::SymbolPoint>* {
+                using T = std::decay_t<decltype(item)>;
+                if constexpr (std::is_same_v<T, hcs::editor::SymbolText>) return nullptr;
+                else return &item.points;
+            }, object);
+            const auto id = std::visit([](const auto& item) { return item.id; }, object);
+            if (id == *selected_symbol_object_id_) return points;
+        }
+        return nullptr;
+    }
+
+    bool selected_symbol_object_supports_vertices() const {
+        const auto* points = selected_symbol_points();
+        return points && points->size() >= 2;
+    }
+
+    void draw_symbol_vertex_handles() {
+        if (!symbol_vertex_edit_mode_ || !selected_symbol_object_id_ || !editing_definition_) return;
+        const auto* points = selected_symbol_points();
+        if (!points) return;
+        int width=kInitialWidth,height=kInitialHeight;
+        (void)SDL_GetWindowSize(window_,&width,&height);
+        const auto canvas=symbol_canvas(width,height);
+        for(std::size_t i=0;i<points->size();++i) {
+            const float x=canvas.origin.x+(*points)[i].x*canvas.zoom;
+            const float y=canvas.origin.y+(*points)[i].y*canvas.zoom;
+            const float r=(selected_symbol_vertex_index_ && *selected_symbol_vertex_index_==i)?6.0F:4.0F;
+            const SDL_Color color=(selected_symbol_vertex_index_ && *selected_symbol_vertex_index_==i)
+                ? SDL_Color{255,190,82,255}:SDL_Color{100,190,255,255};
+            CircuitRenderer::fill_rect(renderer_,x-r,y-r,r*2.0F,r*2.0F,color);
+            CircuitRenderer::outline_rect(renderer_,x-r-1,y-r-1,r*2.0F+2,r*2.0F+2,SDL_Color{12,18,27,255});
+        }
+    }
+
+    void draw_symbol_selection_handles() {
+        if (!editing_definition_) return;
+        int width=kInitialWidth,height=kInitialHeight;
+        (void)SDL_GetWindowSize(window_,&width,&height);
+        const auto canvas=symbol_canvas(width,height);
+        if (selected_symbol_object_id_) {
+            const auto bounds=symbol_object_bounds(*selected_symbol_object_id_);
+            if (!bounds) return;
+            const float x=canvas.origin.x+bounds->x*canvas.zoom;
+            const float y=canvas.origin.y+bounds->y*canvas.zoom;
+            const float w=std::max(1.0F,bounds->width*canvas.zoom);
+            const float h=std::max(1.0F,bounds->height*canvas.zoom);
+            const SDL_Color color{90,180,255,230};
+            CircuitRenderer::outline_rect(renderer_,x-2.0F,y-2.0F,w+4.0F,h+4.0F,color);
+            constexpr float handle=8.0F;
+            CircuitRenderer::fill_rect(renderer_,x+w-handle*0.5F,y+h-handle*0.5F,handle,handle,
+                                       SDL_Color{255,190,82,255});
+            CircuitRenderer::outline_rect(renderer_,x+w-handle*0.5F-1.0F,y+h-handle*0.5F-1.0F,
+                                          handle+2.0F,handle+2.0F,SDL_Color{12,18,27,255});
+        } else if (selected_symbol_port_id_) {
+            const auto found=std::find_if(editing_definition_->symbol.ports.begin(),editing_definition_->symbol.ports.end(),
+                [&](const auto& port){return port.port_id==*selected_symbol_port_id_;});
+            if (found==editing_definition_->symbol.ports.end()) return;
+            const float x=canvas.origin.x+found->x*canvas.zoom;
+            const float y=canvas.origin.y+found->y*canvas.zoom;
+            CircuitRenderer::outline_rect(renderer_,x-7.0F,y-7.0F,14.0F,14.0F,SDL_Color{255,190,82,255});
+            CircuitRenderer::outline_rect(renderer_,x-9.0F,y-9.0F,18.0F,18.0F,SDL_Color{12,18,27,255});
+        }
+    }
+
+    void draw_symbol_creation_preview() {
+        if (!editing_definition_) return;
+        int width=kInitialWidth,height=kInitialHeight;
+        (void)SDL_GetWindowSize(window_,&width,&height);
+        const auto canvas=symbol_canvas(width,height);
+        const SDL_Color preview{255,190,82,230};
+        const auto screen_point=[&](const hcs::editor::SymbolPoint& point) {
+            return Vec2{canvas.origin.x+point.x*canvas.zoom,canvas.origin.y+point.y*canvas.zoom};
+        };
+        if (!symbol_pending_points_.empty()) {
+            for (std::size_t i=1;i<symbol_pending_points_.size();++i)
+                CircuitRenderer::line(renderer_,screen_point(symbol_pending_points_[i-1]),
+                                      screen_point(symbol_pending_points_[i]),preview);
+            if (symbol_cursor_valid_) {
+                const auto cursor=screen_point({symbol_cursor_local_.x,symbol_cursor_local_.y});
+                CircuitRenderer::line(renderer_,screen_point(symbol_pending_points_.back()),cursor,preview);
+                if (symbol_tool_==SymbolTool::Polygon && symbol_pending_points_.size()>=2)
+                    CircuitRenderer::line(renderer_,cursor,screen_point(symbol_pending_points_.front()),SDL_Color{100,150,190,180});
+            }
+            for (const auto& point:symbol_pending_points_) {
+                const auto p=screen_point(point);
+                CircuitRenderer::fill_rect(renderer_,p.x-3.0F,p.y-3.0F,6.0F,6.0F,preview);
+            }
+        }
+        if (symbol_drag_==SymbolDrag::Draw) {
+            const auto a=screen_point({symbol_drag_start_.x,symbol_drag_start_.y});
+            const auto b=screen_point({symbol_drag_last_.x,symbol_drag_last_.y});
+            if (symbol_tool_==SymbolTool::Line) {
+                CircuitRenderer::line(renderer_,a,b,preview);
+            } else {
+                const float x=std::min(a.x,b.x), y=std::min(a.y,b.y);
+                const float w=std::max(1.0F,std::abs(b.x-a.x));
+                const float h=std::max(1.0F,std::abs(b.y-a.y));
+                CircuitRenderer::outline_rect(renderer_,x,y,w,h,preview);
+            }
+        }
+    }
+
+    void render_symbol_designer() {
+        if (!editing_definition_) return;
+        int width = kInitialWidth, height = kInitialHeight;
+        (void)SDL_GetWindowSize(window_, &width, &height);
+        SDL_SetRenderDrawColor(renderer_, 15, 19, 27, 255);
+        (void)SDL_RenderClear(renderer_);
+        CircuitRenderer::fill_rect(renderer_,0,0,static_cast<float>(width),kToolbarHeight,kToolbar);
+        CircuitRenderer::line(renderer_,{0,kToolbarHeight},{static_cast<float>(width),kToolbarHeight},kButtonBorder);
+        for (const auto& button : buttons()) render_button(button);
+        const auto canvas = symbol_canvas(width,height);
+        CircuitRenderer::fill_rect(renderer_,canvas.rect.x,canvas.rect.y,canvas.rect.width,canvas.rect.height,SDL_Color{17,23,32,255});
+        CircuitRenderer::outline_rect(renderer_,canvas.rect.x,canvas.rect.y,canvas.rect.width,canvas.rect.height,kButtonBorder);
+        for (float x=canvas.rect.x; x<canvas.rect.x+canvas.rect.width; x+=20.0F)
+            CircuitRenderer::line(renderer_,{x,canvas.rect.y},{x,canvas.rect.y+canvas.rect.height},SDL_Color{27,35,47,255});
+        for (float y=canvas.rect.y; y<canvas.rect.y+canvas.rect.height; y+=20.0F)
+            CircuitRenderer::line(renderer_,{canvas.rect.x,y},{canvas.rect.x+canvas.rect.width,y},SDL_Color{27,35,47,255});
+        CircuitRenderer::outline_rect(renderer_,canvas.origin.x,canvas.origin.y,
+            editing_definition_->symbol.size.x*canvas.zoom,editing_definition_->symbol.size.y*canvas.zoom,SDL_Color{65,83,105,255});
+        hcs::gui::SymbolRenderer::draw(renderer_,*editing_definition_,canvas.origin,canvas.zoom,{},true);
+        draw_symbol_creation_preview();
+        draw_symbol_vertex_handles();
+        draw_symbol_selection_handles();
+        // Left object/port list.
+        CircuitRenderer::fill_rect(renderer_,0,kToolbarHeight,188,static_cast<float>(height)-kToolbarHeight-kStatusHeight,SDL_Color{23,31,43,255});
+        CircuitRenderer::text(renderer_,12,88,"OBJECTS",0.82F,kText);
+        float row_y=112.0F;
+        for (const auto& object:editing_definition_->symbol.objects) {
+            const auto id=std::visit([](const auto& item){return item.id;},object);
+            const auto kind=std::visit([](const auto& item)->std::string_view {
+                using T=std::decay_t<decltype(item)>;
+                if constexpr(std::is_same_v<T,hcs::editor::SymbolShape>) return hcs::editor::symbol_shape_name(item.type);
+                if constexpr(std::is_same_v<T,hcs::editor::SymbolPath>) return "path";
+                return "text";
+            },object);
+            const bool selected=selected_symbol_object_id_ && *selected_symbol_object_id_==id;
+            if(selected) CircuitRenderer::fill_rect(renderer_,4,row_y-3,180,21,kButtonActive);
+            const auto label=std::string(kind)+"  "+id;
+            CircuitRenderer::text(renderer_,10,row_y,label.c_str(),0.62F,selected?kText:kMuted);
+            row_y+=23;
+            if(row_y>static_cast<float>(height)-220) break;
+        }
+        row_y=std::max(row_y+8,static_cast<float>(height)-190);
+        CircuitRenderer::text(renderer_,12,row_y,"PORTS",0.82F,kText); row_y+=24;
+        for(const auto& port:editing_definition_->symbol.ports) {
+            const bool selected=selected_symbol_port_id_ && *selected_symbol_port_id_==port.port_id;
+            if(selected) CircuitRenderer::fill_rect(renderer_,4,row_y-3,180,21,kButtonActive);
+            const auto label=port.port_id+"  "+std::string(hcs::editor::symbol_orientation_name(port.orientation));
+            CircuitRenderer::text(renderer_,10,row_y,label.c_str(),0.62F,selected?kText:kLogicOne);
+            row_y+=23;
+        }
+        // Right property/help panel.
+        const float right_x=static_cast<float>(width)-210.0F;
+        CircuitRenderer::fill_rect(renderer_,right_x,kToolbarHeight,210,static_cast<float>(height)-kToolbarHeight-kStatusHeight,SDL_Color{23,31,43,255});
+        CircuitRenderer::text(renderer_,right_x+12,88,"PROPERTIES",0.82F,kText);
+        float info_y=116.0F;
+        if(selected_symbol_port_id_) {
+            const auto it=std::find_if(editing_definition_->symbol.ports.begin(),editing_definition_->symbol.ports.end(),
+                [&](const auto& port){return port.port_id==*selected_symbol_port_id_;});
+            if(it!=editing_definition_->symbol.ports.end()) {
+                const auto name="PORT: "+it->port_id;
+                CircuitRenderer::text(renderer_,right_x+12,info_y,name.c_str(),0.68F,kLogicOne); info_y+=20;
+                const auto coords="POS: "+std::to_string(static_cast<int>(it->x))+", "+std::to_string(static_cast<int>(it->y));
+                CircuitRenderer::text(renderer_,right_x+12,info_y,coords.c_str(),0.62F,kMuted); info_y+=20;
+                CircuitRenderer::text(renderer_,right_x+12,info_y,"E: EDIT LABEL",0.62F,kText); info_y+=18;
+                CircuitRenderer::text(renderer_,right_x+12,info_y,"O: CYCLE ORIENTATION",0.56F,kMuted); info_y+=18;
+                CircuitRenderer::text(renderer_,right_x+12,info_y,"SHIFT+O: ANGLE",0.56F,kMuted);
+            }
+        } else if(selected_symbol_object_id_) {
+            const auto selected=std::find_if(editing_definition_->symbol.objects.begin(),editing_definition_->symbol.objects.end(),
+                [&](const auto& object){return std::visit([&](const auto& item){return item.id==*selected_symbol_object_id_;},object);});
+            CircuitRenderer::text(renderer_,right_x+12,info_y,("OBJECT: "+*selected_symbol_object_id_).c_str(),0.65F,kLogicOne); info_y+=22;
+            if(selected!=editing_definition_->symbol.objects.end()) {
+                std::visit([&](const auto& item) {
+                    using T=std::decay_t<decltype(item)>;
+                    if constexpr(std::is_same_v<T,hcs::editor::SymbolShape> || std::is_same_v<T,hcs::editor::SymbolPath>) {
+                        const auto width_text="STROKE: "+std::to_string(item.stroke_width);
+                        CircuitRenderer::text(renderer_,right_x+12,info_y,width_text.c_str(),0.58F,kText); info_y+=18;
+                        if constexpr(std::is_same_v<T,hcs::editor::SymbolShape>) {
+                            const auto type_text="TYPE: "+std::string(hcs::editor::symbol_shape_name(item.type));
+                            CircuitRenderer::text(renderer_,right_x+12,info_y,type_text.c_str(),0.58F,kMuted); info_y+=18;
+                        } else {
+                            const auto point_text="POINTS: "+std::to_string(item.points.size());
+                            CircuitRenderer::text(renderer_,right_x+12,info_y,point_text.c_str(),0.58F,kMuted); info_y+=18;
+                        }
+                    } else {
+                        const auto size_text="SIZE: "+std::to_string(item.size);
+                        CircuitRenderer::text(renderer_,right_x+12,info_y,size_text.c_str(),0.58F,kText); info_y+=18;
+                        CircuitRenderer::text(renderer_,right_x+12,info_y,"FONT: UI / CODE",0.55F,kMuted); info_y+=18;
+                    }
+                },*selected);
+            }
+            CircuitRenderer::text(renderer_,right_x+12,info_y,"R ROTATE  D DUPLICATE",0.58F,kMuted); info_y+=18;
+            CircuitRenderer::text(renderer_,right_x+12,info_y,"[ ] CHANGE LAYER",0.58F,kMuted); info_y+=18;
+            CircuitRenderer::text(renderer_,right_x+12,info_y,"V VISIBILITY  L LOCK",0.58F,kMuted); info_y+=18;
+            CircuitRenderer::text(renderer_,right_x+12,info_y,"E EDIT TEXT",0.58F,kMuted); info_y+=18;
+            CircuitRenderer::text(renderer_,right_x+12,info_y,"P EDIT PATH VERTICES",0.55F,kLogicOne);
+        }
+        CircuitRenderer::text(renderer_,right_x+12,static_cast<float>(height)-150,"DRAG TO DRAW",0.62F,kMuted);
+        CircuitRenderer::text(renderer_,right_x+12,static_cast<float>(height)-130,"ENTER FINISH POLYGON/PATH",0.55F,kMuted);
+        CircuitRenderer::text(renderer_,right_x+12,static_cast<float>(height)-112,"P: VERTEX; CTRL+CLICK: ADD",0.51F,kMuted);
+        CircuitRenderer::text(renderer_,right_x+12,static_cast<float>(height)-94,"DELETE: REMOVE VERTEX/OBJECT",0.51F,kMuted);
+        CircuitRenderer::text(renderer_,right_x+12,static_cast<float>(height)-76,"C: CLOSE PATH; HOME/END: LAYER",0.48F,kMuted);
+        CircuitRenderer::text(renderer_,right_x+12,static_cast<float>(height)-58,"SHIFT+ARROWS/H/V: ALIGN",0.50F,kMuted);
+        CircuitRenderer::text(renderer_,right_x+12,static_cast<float>(height)-40,"WIDTH / SIZE: +/- BUTTONS",0.49F,kMuted);
+        CircuitRenderer::fill_rect(renderer_,0,static_cast<float>(height)-kStatusHeight,static_cast<float>(width),kStatusHeight,kToolbar);
+        CircuitRenderer::text(renderer_,12,static_cast<float>(height)-28,
+            ("SYMBOL "+editing_definition_->id+ (definition_metadata_dirty_?" *":"")+"  |  "+std::string(symbol_tool_==SymbolTool::Select?"SELECT":symbol_tool_==SymbolTool::Polygon?"POLYGON":symbol_tool_==SymbolTool::Path?"PATH":"DRAW TOOL" )).c_str(),0.68F,kMuted);
+        SDL_RenderPresent(renderer_);
+    }
+
+    void on_symbol_mouse_down(const SDL_MouseButtonEvent& event) {
+        const Vec2 screen{event.x,event.y};
+        if(event.button==SDL_BUTTON_MIDDLE && inside_symbol_canvas(screen)) {
+            symbol_drag_=SymbolDrag::Pan; symbol_drag_screen_=screen; return;
+        }
+        if(event.button!=SDL_BUTTON_LEFT) return;
+        if(screen.y<kToolbarHeight) {
+            for(const auto& button:buttons()) {
+                const auto& r=button.rect;
+                if(screen.x>=r.x && screen.y>=r.y && screen.x<=r.x+r.width && screen.y<=r.y+r.height) {handle_button(button.action); return;}
+            }
+            return;
+        }
+        if(screen.x<188.0F) {
+            int width=kInitialWidth,height=kInitialHeight; (void)SDL_GetWindowSize(window_,&width,&height);
+            float row_y=112.0F;
+            for(const auto& object:editing_definition_->symbol.objects) {
+                if(screen.y>=row_y-3 && screen.y<=row_y+18) {
+                    selected_symbol_object_id_=std::visit([](const auto& item){return item.id;},object);
+                    selected_symbol_port_id_.reset(); selected_symbol_vertex_index_.reset(); return;
+                }
+                row_y+=23;
+                if(row_y>static_cast<float>(height)-220) break;
+            }
+            row_y=std::max(row_y+8,static_cast<float>(height)-190)+24;
+            for(const auto& port:editing_definition_->symbol.ports) {
+                if(screen.y>=row_y-3 && screen.y<=row_y+18) {
+                    selected_symbol_port_id_=port.port_id; selected_symbol_object_id_.reset(); selected_symbol_vertex_index_.reset(); return;
+                }
+                row_y+=23;
+            }
+            return;
+        }
+        if(!inside_symbol_canvas(screen)) return;
+        const auto point=snap_symbol_point(symbol_screen_to_local(screen));
+        symbol_cursor_local_=point;
+        symbol_cursor_valid_=true;
+        if(symbol_tool_==SymbolTool::Polygon || symbol_tool_==SymbolTool::Path) {
+            if(symbol_pending_points_.size()<1024) symbol_pending_points_.push_back({point.x,point.y});
+            return;
+        }
+        if(symbol_tool_==SymbolTool::Text) {add_symbol_text_at(point); return;}
+        if(symbol_tool_==SymbolTool::Select) {
+            if(symbol_vertex_edit_mode_ && selected_symbol_object_id_) {
+                if (SDL_GetModState() & SDL_KMOD_CTRL) {
+                    const auto inserted=hcs::editor::insert_symbol_object_vertex(editing_definition_->symbol,
+                        *selected_symbol_object_id_,point,12.0F/canvas_zoom());
+                    if(inserted) {
+                        selected_symbol_vertex_index_=*inserted;
+                        symbol_drag_=SymbolDrag::Vertex;
+                        symbol_drag_last_=point;
+                        mark_symbol_changed();
+                        return;
+                    }
+                }
+                const auto vertex=hcs::editor::symbol_object_vertex_at(editing_definition_->symbol,
+                    *selected_symbol_object_id_,point,9.0F/canvas_zoom());
+                if(vertex) {
+                    selected_symbol_vertex_index_=*vertex;
+                    symbol_drag_=SymbolDrag::Vertex;
+                    symbol_drag_last_=point;
+                    return;
+                }
+            }
+            if (selected_symbol_object_id_) {
+                const auto bounds=symbol_object_bounds(*selected_symbol_object_id_);
+                const float handle_tolerance=10.0F/canvas_zoom();
+                if (bounds && point.x >= bounds->x+bounds->width-handle_tolerance &&
+                    point.y >= bounds->y+bounds->height-handle_tolerance) {
+                    symbol_drag_=SymbolDrag::Resize;
+                    symbol_drag_last_=point;
+                    return;
+                }
+            }
+            if(const auto port=hcs::editor::symbol_port_at(editing_definition_->symbol,point,10.0F/canvas_zoom())) {
+                selected_symbol_port_id_=*port; selected_symbol_object_id_.reset(); selected_symbol_vertex_index_.reset();
+                symbol_drag_=SymbolDrag::Port; symbol_drag_last_=point; return;
+            }
+            if(const auto object=hcs::editor::symbol_object_at(editing_definition_->symbol,point,5.0F/canvas_zoom())) {
+                selected_symbol_object_id_=*object; selected_symbol_port_id_.reset(); selected_symbol_vertex_index_.reset();
+                const auto bounds=symbol_object_bounds(*object);
+                if(bounds && point.x>=bounds->x+bounds->width-8.0F/canvas_zoom() && point.y>=bounds->y+bounds->height-8.0F/canvas_zoom())
+                    symbol_drag_=SymbolDrag::Resize;
+                else symbol_drag_=SymbolDrag::Object;
+                symbol_drag_last_=point; return;
+            }
+            selected_symbol_object_id_.reset(); selected_symbol_port_id_.reset(); selected_symbol_vertex_index_.reset(); symbol_drag_=SymbolDrag::None; return;
+        }
+        symbol_drag_=SymbolDrag::Draw; symbol_drag_start_=point; symbol_drag_last_=point;
+    }
+
+    float canvas_zoom() const {
+        int width=kInitialWidth,height=kInitialHeight; (void)SDL_GetWindowSize(window_,&width,&height);
+        return symbol_canvas(width,height).zoom;
+    }
+
+    std::optional<Rect> symbol_object_bounds(std::string_view id) const {
+        if(!editing_definition_) return std::nullopt;
+        for(const auto& object:editing_definition_->symbol.objects) {
+            const auto result=std::visit([&](const auto& item)->std::optional<Rect> {
+                if(item.id!=id) return std::nullopt;
+                using T=std::decay_t<decltype(item)>;
+                if constexpr(std::is_same_v<T,hcs::editor::SymbolText>) {
+                    const float width = std::max(item.size, static_cast<float>(item.value.size()) * item.size * 0.55F);
+                    const float left = item.alignment == hcs::editor::SymbolTextAlignment::Center ? item.x - width * 0.5F :
+                                       item.alignment == hcs::editor::SymbolTextAlignment::Right ? item.x - width : item.x;
+                    return Rect{left, item.y, width, item.size * 1.4F};
+                }
+                else if constexpr(std::is_same_v<T,hcs::editor::SymbolShape>) {
+                    if(!item.points.empty()) {
+                        float min_x=item.points[0].x,max_x=min_x,min_y=item.points[0].y,max_y=min_y;
+                        for(const auto& p:item.points){min_x=std::min(min_x,p.x);max_x=std::max(max_x,p.x);min_y=std::min(min_y,p.y);max_y=std::max(max_y,p.y);}
+                        return Rect{min_x,min_y,std::max(1.0F,max_x-min_x),std::max(1.0F,max_y-min_y)};
+                    }
+                    return Rect{item.x,item.y,item.width,item.height};
+                } else {
+                    if(item.points.empty()) return std::nullopt;
+                    float min_x=item.points[0].x,max_x=min_x,min_y=item.points[0].y,max_y=min_y;
+                    for(const auto& p:item.points){min_x=std::min(min_x,p.x);max_x=std::max(max_x,p.x);min_y=std::min(min_y,p.y);max_y=std::max(max_y,p.y);}
+                    return Rect{min_x,min_y,std::max(1.0F,max_x-min_x),std::max(1.0F,max_y-min_y)};
+                }
+            },object);
+            if(result) return result;
+        }
+        return std::nullopt;
+    }
+
+    void on_symbol_mouse_up(const SDL_MouseButtonEvent& event) {
+        if(event.button==SDL_BUTTON_MIDDLE && symbol_drag_==SymbolDrag::Pan) {symbol_drag_=SymbolDrag::None;return;}
+        if(event.button!=SDL_BUTTON_LEFT) return;
+        if(symbol_drag_==SymbolDrag::Draw) create_symbol_shape_from_drag(symbol_drag_start_,symbol_drag_last_);
+        symbol_drag_=SymbolDrag::None;
+    }
+
+    void on_symbol_mouse_motion(const SDL_MouseMotionEvent& event) {
+        const Vec2 screen{event.x,event.y};
+        if(symbol_drag_==SymbolDrag::Pan) {
+            symbol_pan_offset_=symbol_pan_offset_+(screen-symbol_drag_screen_); symbol_drag_screen_=screen; return;
+        }
+        if (inside_symbol_canvas(screen)) {
+            symbol_cursor_local_=snap_symbol_point(symbol_screen_to_local(screen));
+            symbol_cursor_valid_=true;
+        } else {
+            symbol_cursor_valid_=false;
+        }
+        if(!inside_symbol_canvas(screen)) return;
+        const auto point=symbol_cursor_local_;
+        if(symbol_drag_==SymbolDrag::Draw) {symbol_drag_last_=point;return;}
+        const auto delta=point-symbol_drag_last_;
+        if(symbol_drag_==SymbolDrag::Object && selected_symbol_object_id_) {
+            (void)hcs::editor::move_symbol_object(editing_definition_->symbol,*selected_symbol_object_id_,delta);
+            mark_symbol_changed();
+        } else if(symbol_drag_==SymbolDrag::Resize && selected_symbol_object_id_) {
+            (void)hcs::editor::resize_symbol_object(editing_definition_->symbol,*selected_symbol_object_id_,delta);
+            mark_symbol_changed();
+        } else if(symbol_drag_==SymbolDrag::Port && selected_symbol_port_id_) {
+            (void)hcs::editor::move_symbol_port(editing_definition_->symbol,*selected_symbol_port_id_,point,
+                symbol_port_orientation(point));
+            mark_symbol_changed();
+        } else if(symbol_drag_==SymbolDrag::Vertex && selected_symbol_object_id_ && selected_symbol_vertex_index_) {
+            (void)hcs::editor::move_symbol_object_vertex(editing_definition_->symbol,*selected_symbol_object_id_,
+                *selected_symbol_vertex_index_,point);
+            mark_symbol_changed();
+        }
+        symbol_drag_last_=point;
+    }
+
+    void delete_symbol_selection() {
+        if(!editing_definition_) return;
+        if(selected_symbol_vertex_index_ && selected_symbol_object_id_) {
+            if(hcs::editor::remove_symbol_object_vertex(editing_definition_->symbol,*selected_symbol_object_id_,*selected_symbol_vertex_index_)) {
+                selected_symbol_vertex_index_.reset(); mark_symbol_changed();
+            } else set_status("A path must retain at least two points; a closed polygon must retain at least three.");
+            return;
+        }
+        if(selected_symbol_port_id_) {
+            hcs::editor::PersistenceError error;
+            if(!hcs::editor::remove_custom_component_port(*editing_definition_,*selected_symbol_port_id_,error)) {
+                set_status("Cannot remove port: "+error.describe()); return;
+            }
+            circuit_=editing_definition_->implementation;
+            selected_symbol_port_id_.reset(); definition_metadata_dirty_=true;
+            runtime_.invalidate();
+            try {runtime_.synchronize(circuit_,library_);} catch(const std::exception& e){set_status("Port removed; runtime warning: "+std::string(e.what()));}
+        } else if(selected_symbol_object_id_) {
+            if(hcs::editor::remove_symbol_object(editing_definition_->symbol,*selected_symbol_object_id_)) {
+                selected_symbol_object_id_.reset(); mark_symbol_changed();
+            }
+        }
+    }
+
+    void handle_symbol_designer_key(const SDL_KeyboardEvent& event, bool control) {
+        if(control && event.key==SDLK_S) { (void)save_definition_edit(); return; }
+        if(control && event.key==SDLK_T) { enter_symbol_text_mode(); return; }
+        if(event.key==SDLK_ESCAPE) {
+            if(symbol_vertex_edit_mode_) { symbol_vertex_edit_mode_=false; selected_symbol_vertex_index_.reset(); }
+            else if(!symbol_pending_points_.empty()) symbol_pending_points_.clear();
+            else close_symbol_designer();
+            return;
+        }
+        if(event.key==SDLK_RETURN || event.key==SDLK_KP_ENTER) {finish_symbol_path();return;}
+        if(event.key==SDLK_DELETE || event.key==SDLK_BACKSPACE) {delete_symbol_selection();return;}
+        if(event.key==SDLK_G) {symbol_snap_=!symbol_snap_;return;}
+        if(event.key==SDLK_E) {begin_symbol_object_text_edit();return;}
+        if(event.key==SDLK_P && selected_symbol_object_id_) {
+            if(selected_symbol_object_supports_vertices()) {
+                symbol_vertex_edit_mode_=!symbol_vertex_edit_mode_;
+                selected_symbol_vertex_index_.reset();
+                set_status(symbol_vertex_edit_mode_?"Vertex editing enabled. Drag a handle; Ctrl+click an edge to insert a vertex; Delete removes the selected vertex.":"Vertex editing disabled.");
+            } else set_status("Select a polygon or path with editable vertices first.");
+            return;
+        }
+        if(event.key==SDLK_O && selected_symbol_port_id_) {
+            const auto found=std::find_if(editing_definition_->symbol.ports.begin(),editing_definition_->symbol.ports.end(),
+                [&](const auto& port){return port.port_id==*selected_symbol_port_id_;});
+            if(found!=editing_definition_->symbol.ports.end()) {
+                const bool angle=(SDL_GetModState() & SDL_KMOD_SHIFT)!=0;
+                if(angle) {
+                    (void)hcs::editor::set_symbol_port_orientation(editing_definition_->symbol,*selected_symbol_port_id_,
+                        hcs::editor::SymbolPortOrientation::Angle,found->angle_degrees);
+                } else {
+                    auto next=found->orientation;
+                    switch(next) {
+                        case hcs::editor::SymbolPortOrientation::Left: next=hcs::editor::SymbolPortOrientation::Right; break;
+                        case hcs::editor::SymbolPortOrientation::Right: next=hcs::editor::SymbolPortOrientation::Top; break;
+                        case hcs::editor::SymbolPortOrientation::Top: next=hcs::editor::SymbolPortOrientation::Bottom; break;
+                        case hcs::editor::SymbolPortOrientation::Bottom: next=hcs::editor::SymbolPortOrientation::Left; break;
+                        case hcs::editor::SymbolPortOrientation::Angle: next=hcs::editor::SymbolPortOrientation::Left; break;
+                    }
+                    (void)hcs::editor::set_symbol_port_orientation(editing_definition_->symbol,*selected_symbol_port_id_,next,0.0F);
+                }
+                mark_symbol_changed();
+            }
+            return;
+        }
+        if(selected_symbol_port_id_ && (event.key==SDLK_LEFT || event.key==SDLK_RIGHT)) {
+            const auto found=std::find_if(editing_definition_->symbol.ports.begin(),editing_definition_->symbol.ports.end(),
+                [&](const auto& port){return port.port_id==*selected_symbol_port_id_;});
+            if(found!=editing_definition_->symbol.ports.end() && found->orientation==hcs::editor::SymbolPortOrientation::Angle) {
+                const float delta=event.key==SDLK_LEFT?-15.0F:15.0F;
+                (void)hcs::editor::set_symbol_port_orientation(editing_definition_->symbol,*selected_symbol_port_id_,
+                    hcs::editor::SymbolPortOrientation::Angle,found->angle_degrees+delta);
+                mark_symbol_changed(); return;
+            }
+        }
+        if (selected_symbol_object_id_ && (SDL_GetModState() & SDL_KMOD_SHIFT) != 0) {
+            std::optional<hcs::editor::SymbolAlignment> alignment;
+            switch (event.key) {
+                case SDLK_LEFT: alignment = hcs::editor::SymbolAlignment::Left; break;
+                case SDLK_H: alignment = hcs::editor::SymbolAlignment::HorizontalCenter; break;
+                case SDLK_RIGHT: alignment = hcs::editor::SymbolAlignment::Right; break;
+                case SDLK_UP: alignment = hcs::editor::SymbolAlignment::Top; break;
+                case SDLK_V: alignment = hcs::editor::SymbolAlignment::VerticalCenter; break;
+                case SDLK_DOWN: alignment = hcs::editor::SymbolAlignment::Bottom; break;
+                default: break;
+            }
+            if (alignment) {
+                if (hcs::editor::align_symbol_object(editing_definition_->symbol, *selected_symbol_object_id_, *alignment)) {
+                    mark_symbol_changed();
+                    set_status("Aligned selected object to the symbol canvas.");
+                }
+                return;
+            }
+        }
+        if(selected_symbol_object_id_) {
+            if(event.key==SDLK_HOME || event.key==SDLK_END) {
+                const int direction = event.key==SDLK_HOME ? -1 : 1;
+                bool changed = false;
+                while (hcs::editor::reorder_symbol_object(editing_definition_->symbol, *selected_symbol_object_id_, direction)) changed = true;
+                if (changed) mark_symbol_changed();
+                return;
+            }
+            if(event.key==SDLK_C) {
+                const auto found=std::find_if(editing_definition_->symbol.objects.begin(),editing_definition_->symbol.objects.end(),
+                    [&](const auto& object){return std::visit([&](const auto& item){return item.id==*selected_symbol_object_id_;},object);});
+                if(found!=editing_definition_->symbol.objects.end()) {
+                    if(const auto* path=std::get_if<hcs::editor::SymbolPath>(&*found)) {
+                        const bool was_closed=path->closed;
+                        if(hcs::editor::set_symbol_path_closed(editing_definition_->symbol,*selected_symbol_object_id_,!was_closed)) {
+                            mark_symbol_changed(); set_status(was_closed?"Path opened.":"Path closed.");
+                        }
+                    }
+                }
+                return;
+            }
+            if(event.key==SDLK_R) {if(hcs::editor::rotate_symbol_object(editing_definition_->symbol,*selected_symbol_object_id_,90.0F)) mark_symbol_changed();}
+            else if(event.key==SDLK_D) {const auto id=next_symbol_object_id();if(hcs::editor::duplicate_symbol_object(editing_definition_->symbol,*selected_symbol_object_id_,id)){selected_symbol_object_id_=id;mark_symbol_changed();}}
+            else if(event.key==SDLK_LEFTBRACKET) {if(hcs::editor::reorder_symbol_object(editing_definition_->symbol,*selected_symbol_object_id_,-1))mark_symbol_changed();}
+            else if(event.key==SDLK_RIGHTBRACKET) {if(hcs::editor::reorder_symbol_object(editing_definition_->symbol,*selected_symbol_object_id_,1))mark_symbol_changed();}
+            else if(event.key==SDLK_V || event.key==SDLK_L) {
+                for(auto& object:editing_definition_->symbol.objects) std::visit([&](auto& item){if(item.id==*selected_symbol_object_id_){if(event.key==SDLK_V)item.visible=!item.visible;else item.locked=!item.locked;}},object);
+                mark_symbol_changed();
+            }
+            else if(event.key==SDLK_F) {
+                for(auto& object:editing_definition_->symbol.objects) if(auto* shape=std::get_if<hcs::editor::SymbolShape>(&object);shape && shape->id==*selected_symbol_object_id_) {
+                    shape->fill=shape->fill=="none"?"#26384C":"none"; mark_symbol_changed(); break;
+                }
+            }
         }
     }
 
@@ -740,6 +1823,8 @@ private:
         if (!value) return;
         if (path_mode_ != PathMode::None) {
             if (path_buffer_.size() + std::char_traits<char>::length(value) <= 4096U) path_buffer_ += value;
+        } else if (symbol_text_mode_ && confirm_pending_ == DeferredAction::None) {
+            insert_symbol_text(value);
         } else if (text_mode_ && confirm_pending_ == DeferredAction::None) {
             insert_text(value);
         } else if (library_panel_ && path_mode_ == PathMode::None) {
@@ -927,6 +2012,8 @@ private:
                 path_mode_ == PathMode::EditDefinitionDescription ? "EDIT COMPONENT DESCRIPTION" :
                 path_mode_ == PathMode::EditDefinitionCategory ? "EDIT COMPONENT CATEGORY" :
                 path_mode_ == PathMode::PortName ? "RENAME EXTERNAL PORT" :
+                path_mode_ == PathMode::SymbolObjectText ? "EDIT SYMBOL TEXT OBJECT" :
+                path_mode_ == PathMode::SymbolPortLabel ? "EDIT VISUAL PORT LABEL" :
                 "SAVE HCS FILE AS - ENTER PATH", 1.0F, kText);
             CircuitRenderer::text(target, 145.0F, static_cast<float>(height) * 0.5F - 8.0F,
                                   path_buffer_.c_str(), 1.0F, kLogicOne);
@@ -966,6 +2053,42 @@ private:
         constexpr float y = 10.0F;
         constexpr float h = 27.0F;
         constexpr float settings_y = 41.0F;
+        if (symbol_text_mode_) {
+            return {
+                {{10, y, 116, h}, "APPLY SYMBOL", Button::Action::SymbolTextApply},
+                {{132, y, 118, h}, "RELOAD SYMBOL", Button::Action::SymbolTextReload},
+                {{256, y, 104, h}, "VISUAL VIEW", Button::Action::SymbolBack},
+            };
+        }
+        if (symbol_designer_mode_) {
+            return {
+                {{8,y,58,h},"SELECT",Button::Action::SymbolSelect},
+                {{70,y,48,h},"RECT",Button::Action::SymbolRect},
+                {{122,y,58,h},"ROUND",Button::Action::SymbolRoundedRect},
+                {{184,y,58,h},"CIRCLE",Button::Action::SymbolCircle},
+                {{246,y,62,h},"ELLIPSE",Button::Action::SymbolEllipse},
+                {{312,y,48,h},"LINE",Button::Action::SymbolLine},
+                {{364,y,58,h},"POLYGON",Button::Action::SymbolPolygon},
+                {{426,y,48,h},"PATH",Button::Action::SymbolPath},
+                {{478,y,48,h},"ARC",Button::Action::SymbolArc},
+                {{530,y,52,h},"TEXT",Button::Action::SymbolAddText},
+                {{586,y,52,h},"+INPUT",Button::Action::SymbolAddInput},
+                {{642,y,58,h},"+OUTPUT",Button::Action::SymbolAddOutput},
+                {{704,y,90,h},symbol_snap_?"SNAP ON":"SNAP OFF",Button::Action::SymbolSnap},
+                {{798,y,112,h},"SYMBOL TEXT",Button::Action::SymbolTextMode},
+                {{914,y,82,h},"BACK",Button::Action::SymbolBack},
+                {{1000,y,96,h},"SAVE DEF",Button::Action::SaveDefinition},
+                {{8,settings_y,92,h},"PRESET +",Button::Action::SymbolPreset},
+                {{104,settings_y,82,h},"FILL",Button::Action::SymbolFill},
+                {{190,settings_y,82,h},"STROKE",Button::Action::SymbolStroke},
+                {{276,settings_y,90,h},"ZOOM +",Button::Action::SymbolZoomIn},
+                {{370,settings_y,90,h},"ZOOM -",Button::Action::SymbolZoomOut},
+                {{464,settings_y,68,h},"WIDTH -",Button::Action::SymbolStrokeDown},
+                {{536,settings_y,68,h},"WIDTH +",Button::Action::SymbolStrokeUp},
+                {{608,settings_y,68,h},"SIZE -",Button::Action::SymbolTextSizeDown},
+                {{680,settings_y,68,h},"SIZE +",Button::Action::SymbolTextSizeUp},
+            };
+        }
         if (text_mode_) {
             return {
                 {{10, y, 106, h}, "APPLY TEXT", Button::Action::ApplyText},
@@ -991,6 +2114,7 @@ private:
                 {{82, settings_y, 96, h}, "SAVE DEF", Button::Action::SaveDefinition},
                 {{184, settings_y, 108, h}, "CANCEL EDIT", Button::Action::CancelDefinitionEdit},
                 {{300, settings_y, 90, h}, "LIBRARY", Button::Action::ToggleLibrary},
+                {{396, settings_y, 90, h}, "SYMBOL", Button::Action::OpenSymbolDesigner},
             };
         }
         const auto& acceleration = runtime_.acceleration();
@@ -1030,6 +2154,70 @@ private:
     }
 
     void handle_button(Button::Action action) {
+        if (symbol_text_mode_) {
+            if (action == Button::Action::SymbolTextApply) (void)apply_symbol_text();
+            else if (action == Button::Action::SymbolTextReload) reload_symbol_text();
+            else if (action == Button::Action::SymbolBack) leave_symbol_text_mode();
+            return;
+        }
+        if (symbol_designer_mode_) {
+            switch (action) {
+                case Button::Action::SymbolBack: close_symbol_designer(); break;
+                case Button::Action::SymbolTextMode: enter_symbol_text_mode(); break;
+                case Button::Action::SymbolSelect: symbol_tool_=SymbolTool::Select; symbol_pending_points_.clear(); break;
+                case Button::Action::SymbolRect: symbol_tool_=SymbolTool::Rectangle; break;
+                case Button::Action::SymbolRoundedRect: symbol_tool_=SymbolTool::RoundedRectangle; break;
+                case Button::Action::SymbolCircle: symbol_tool_=SymbolTool::Circle; break;
+                case Button::Action::SymbolEllipse: symbol_tool_=SymbolTool::Ellipse; break;
+                case Button::Action::SymbolLine: symbol_tool_=SymbolTool::Line; break;
+                case Button::Action::SymbolPolygon: symbol_tool_=SymbolTool::Polygon; symbol_pending_points_.clear(); break;
+                case Button::Action::SymbolPath: symbol_tool_=SymbolTool::Path; symbol_pending_points_.clear(); break;
+                case Button::Action::SymbolArc: symbol_tool_=SymbolTool::Arc; break;
+                case Button::Action::SymbolAddText: symbol_tool_=SymbolTool::Text; break;
+                case Button::Action::SymbolAddInput:
+                    if (add_definition_port(hcs::editor::PinDirection::Input))
+                        selected_symbol_port_id_=editing_definition_->ports.back().id;
+                    break;
+                case Button::Action::SymbolAddOutput:
+                    if (add_definition_port(hcs::editor::PinDirection::Output))
+                        selected_symbol_port_id_=editing_definition_->ports.back().id;
+                    break;
+                case Button::Action::SymbolPreset: apply_symbol_preset(); break;
+                case Button::Action::SymbolSnap: symbol_snap_=!symbol_snap_; break;
+                case Button::Action::SymbolFill:
+                case Button::Action::SymbolStroke:
+                    if (selected_symbol_object_id_) {
+                        bool changed = false;
+                        for (auto& object:editing_definition_->symbol.objects) {
+                            std::visit([&](auto& item) {
+                                using T = std::decay_t<decltype(item)>;
+                                if (item.id != *selected_symbol_object_id_) return;
+                                if constexpr (std::is_same_v<T, hcs::editor::SymbolShape> ||
+                                              std::is_same_v<T, hcs::editor::SymbolPath>) {
+                                    auto& color = action == Button::Action::SymbolFill ? item.fill : item.stroke;
+                                    color = color == "#202630" ? "#365A78" : (color == "#365A78" ? "none" : "#202630");
+                                    changed = true;
+                                } else {
+                                    item.color = item.color == "#D0D7E2" ? "#FFBE52" : "#D0D7E2";
+                                    changed = true;
+                                }
+                            }, object);
+                            if (changed) break;
+                        }
+                        if (changed) mark_symbol_changed();
+                    }
+                    break;
+                case Button::Action::SymbolStrokeDown: adjust_selected_symbol_stroke(-0.5F); break;
+                case Button::Action::SymbolStrokeUp: adjust_selected_symbol_stroke(0.5F); break;
+                case Button::Action::SymbolTextSizeDown: adjust_selected_symbol_text_size(-1.0F); break;
+                case Button::Action::SymbolTextSizeUp: adjust_selected_symbol_text_size(1.0F); break;
+                case Button::Action::SymbolZoomIn: symbol_zoom_factor_=std::clamp(symbol_zoom_factor_*1.2F,0.3F,5.0F); break;
+                case Button::Action::SymbolZoomOut: symbol_zoom_factor_=std::clamp(symbol_zoom_factor_/1.2F,0.3F,5.0F); break;
+                case Button::Action::SaveDefinition: (void)save_definition_edit(); break;
+                default: break;
+            }
+            return;
+        }
         if (editing_definition_ && action != Button::Action::PlaceInput &&
             action != Button::Action::PlaceOutput && action != Button::Action::PlaceAnd &&
             action != Button::Action::PlaceOr && action != Button::Action::PlaceNot &&
@@ -1038,17 +2226,17 @@ private:
             action != Button::Action::Reset && action != Button::Action::NextBackend &&
             action != Button::Action::NextRate && action != Button::Action::TextEdit &&
             action != Button::Action::ToggleLibrary && action != Button::Action::SaveDefinition &&
-            action != Button::Action::CancelDefinitionEdit) {
+            action != Button::Action::CancelDefinitionEdit && action != Button::Action::OpenSymbolDesigner) {
             set_status("This action is unavailable while editing a component definition.");
             return;
         }
         switch (action) {
             case Button::Action::PlaceInput:
-                if (editing_definition_) add_definition_port(hcs::editor::PinDirection::Input);
+                if (editing_definition_) (void)add_definition_port(hcs::editor::PinDirection::Input);
                 else placement_ = ComponentType::Input;
                 break;
             case Button::Action::PlaceOutput:
-                if (editing_definition_) add_definition_port(hcs::editor::PinDirection::Output);
+                if (editing_definition_) (void)add_definition_port(hcs::editor::PinDirection::Output);
                 else placement_ = ComponentType::Output;
                 break;
             case Button::Action::PlaceAnd: placement_ = ComponentType::And; break;
@@ -1131,6 +2319,8 @@ private:
             case Button::Action::EditDefinition: edit_selected_definition(); break;
             case Button::Action::SaveDefinition: (void)save_definition_edit(); break;
             case Button::Action::CancelDefinitionEdit: request_action(DeferredAction::CancelDefinitionEdit); break;
+            case Button::Action::OpenSymbolDesigner: open_symbol_designer(); break;
+            default: break;
         }
     }
 
@@ -1198,9 +2388,11 @@ private:
                     on_mouse_motion(event.motion);
                     break;
                 case SDL_EVENT_MOUSE_WHEEL: {
-                    if (text_mode_ || path_mode_ != PathMode::None || confirm_pending_ != DeferredAction::None || overwrite_confirmation_) break;
+                    if (symbol_text_mode_ || text_mode_ || path_mode_ != PathMode::None || confirm_pending_ != DeferredAction::None || overwrite_confirmation_) break;
                     const Vec2 pointer{event.wheel.mouse_x, event.wheel.mouse_y};
-                    if (inside_viewport(pointer)) {
+                    if (symbol_designer_mode_ && inside_symbol_canvas(pointer)) {
+                        symbol_zoom_factor_ = std::clamp(symbol_zoom_factor_ * (event.wheel.y > 0 ? 1.1F : 0.9F), 0.3F, 5.0F);
+                    } else if (inside_viewport(pointer)) {
                         const auto direction = event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED
                             ? -event.wheel.y : event.wheel.y;
                         camera_.zoom_at(pointer, direction);
@@ -1227,6 +2419,11 @@ private:
 
     void on_mouse_down(const SDL_MouseButtonEvent& event) {
         const Vec2 screen{event.x, event.y};
+        if (symbol_designer_mode_ && !symbol_text_mode_ && path_mode_ == PathMode::None &&
+            confirm_pending_ == DeferredAction::None && !overwrite_confirmation_) {
+            on_symbol_mouse_down(event);
+            return;
+        }
         if (event.button == SDL_BUTTON_MIDDLE) {
             if (path_mode_ == PathMode::None && confirm_pending_ == DeferredAction::None &&
                 !overwrite_confirmation_ && !text_mode_ && inside_viewport(screen)) {
@@ -1283,8 +2480,7 @@ private:
             if (placement_custom_) {
                 const auto* definition = library_.find(*placement_custom_);
                 if (definition) {
-                    std::vector<CustomPortLayout> ports;
-                    for (const auto& port : definition->ports) ports.push_back({port.id, port.name, port.direction});
+                    const auto ports = hcs::editor::custom_component_port_layouts(*definition);
                     (void)circuit_.add_custom_component(definition->id, world, ports, definition->size);
                 }
                 placement_custom_.reset();
@@ -1306,7 +2502,20 @@ private:
             }
         }
 
-        if (const auto component = circuit_.component_at(world)) {
+        auto component = circuit_.component_at(world);
+        if (component) {
+            const auto* hit_component = circuit_.find_component(*component);
+            if (hit_component && hit_component->type == ComponentType::Custom) {
+                const auto* definition = library_.find(hit_component->definition_id);
+                if (definition) {
+                    const hcs::editor::SymbolTransform transform{hit_component->rotation_quadrants,
+                        hit_component->flip_horizontal, hit_component->flip_vertical};
+                    if (!hcs::gui::SymbolRenderer::hit_test(*definition, hit_component->position, world,
+                                                            transform, 5.0F / camera_.zoom())) component.reset();
+                }
+            }
+        }
+        if (component) {
             const auto modifiers = SDL_GetModState();
             const bool extend_selection = (modifiers & (SDL_KMOD_CTRL | SDL_KMOD_SHIFT)) != 0;
             if (extend_selection) {
@@ -1337,6 +2546,7 @@ private:
     }
 
     void on_mouse_up(const SDL_MouseButtonEvent& event) {
+        if (symbol_designer_mode_ && !symbol_text_mode_) { on_symbol_mouse_up(event); return; }
         if (panning_ && event.button == pan_button_) {
             const bool left_click_without_drag = pan_button_ == SDL_BUTTON_LEFT && !pan_moved_;
             panning_ = false;
@@ -1372,7 +2582,12 @@ private:
     }
 
     void on_mouse_motion(const SDL_MouseMotionEvent& event) {
-        if (text_mode_ || path_mode_ != PathMode::None || confirm_pending_ != DeferredAction::None || overwrite_confirmation_) return;
+        if (symbol_designer_mode_ && !symbol_text_mode_ && path_mode_ == PathMode::None &&
+            confirm_pending_ == DeferredAction::None && !overwrite_confirmation_) {
+            on_symbol_mouse_motion(event);
+            return;
+        }
+        if (symbol_text_mode_ || text_mode_ || path_mode_ != PathMode::None || confirm_pending_ != DeferredAction::None || overwrite_confirmation_) return;
         const Vec2 screen{event.x, event.y};
         if (panning_) {
             const auto delta = screen - last_mouse_;
@@ -1421,6 +2636,14 @@ private:
             else if (event.key == SDLK_RETURN || event.key == SDLK_KP_ENTER) finish_path_entry();
             else if (event.key == SDLK_BACKSPACE) erase_path_character();
             else if (control && (event.key == SDLK_A)) path_buffer_.clear();
+            return;
+        }
+        if (symbol_text_mode_) {
+            handle_symbol_text_key(event, control, shift);
+            return;
+        }
+        if (symbol_designer_mode_) {
+            handle_symbol_designer_key(event, control);
             return;
         }
         if (text_mode_) {
@@ -1473,9 +2696,9 @@ private:
         } else if (editing_definition_ && !control && event.key == SDLK_C) {
             begin_path_entry(PathMode::EditDefinitionCategory);
         } else if (editing_definition_ && !control && event.key == SDLK_I) {
-            add_definition_port(hcs::editor::PinDirection::Input);
+            (void)add_definition_port(hcs::editor::PinDirection::Input);
         } else if (editing_definition_ && !control && event.key == SDLK_O) {
-            add_definition_port(hcs::editor::PinDirection::Output);
+            (void)add_definition_port(hcs::editor::PinDirection::Output);
         } else if (library_panel_ && event.key == SDLK_E) {
             const auto items = filtered_library_items();
             if (!items.empty() && !items.front().built_in) begin_definition_edit(items.front().id);
@@ -1493,6 +2716,14 @@ private:
                     runtime_.synchronize(circuit_, library_);
                     controller_.notify_input_changed();
                 }
+            }
+        } else if (!editing_definition_ && !circuit_.selected_components().empty() && !control) {
+            const auto id = circuit_.selected_components().front();
+            const auto* selected = circuit_.find_component(id);
+            if (selected && selected->type == ComponentType::Custom) {
+                if (event.key == SDLK_R) (void)circuit_.rotate_component(id, 1);
+                else if (event.key == SDLK_H) (void)circuit_.flip_component(id, true);
+                else if (event.key == SDLK_V) (void)circuit_.flip_component(id, false);
             }
         } else if (event.key == SDLK_SPACE) {
             controller_.toggle_running();
@@ -1578,6 +2809,10 @@ private:
             CircuitRenderer::text(renderer_, panel_x + 14.0F, y + 14.0F, detail.c_str(), 0.68F, kMuted);
             CircuitRenderer::text(renderer_, panel_x + 14.0F, y + 25.0F, preview.c_str(), 0.58F, kLogicOne);
             CircuitRenderer::text(renderer_, panel_x + 14.0F, y + 36.0F, item.description.c_str(), 0.50F, kMuted);
+            if (!item.built_in) {
+                if (const auto* definition = library_.find(item.id))
+                    hcs::gui::SymbolRenderer::draw(renderer_, *definition, {panel_x + 232.0F, y + 4.0F}, 0.24F, {}, false);
+            }
             y += 56.0F;
         }
         if (items.empty()) CircuitRenderer::text(renderer_, panel_x + 14.0F, y, "NO MATCHING COMPONENTS", 0.8F, kMuted);
@@ -1597,6 +2832,8 @@ private:
     }
 
     void render() {
+        if (symbol_text_mode_) { render_symbol_text_editor(); return; }
+        if (symbol_designer_mode_) { render_symbol_designer(); return; }
         if (text_mode_) {
             render_text_mode();
             return;
@@ -1680,6 +2917,31 @@ private:
     std::string root_text_buffer_before_definition_edit_;
     bool root_text_buffer_dirty_before_definition_edit_{false};
     bool definition_metadata_dirty_{false};
+    bool symbol_designer_mode_{false};
+    bool symbol_text_mode_{false};
+    bool symbol_text_buffer_dirty_{false};
+    bool symbol_snap_{true};
+    bool symbol_vertex_edit_mode_{false};
+    SymbolTool symbol_tool_{SymbolTool::Select};
+    SymbolDrag symbol_drag_{SymbolDrag::None};
+    float symbol_zoom_factor_{1.0F};
+    Vec2 symbol_pan_offset_{};
+    Vec2 symbol_drag_start_{};
+    Vec2 symbol_drag_last_{};
+    Vec2 symbol_drag_screen_{};
+    std::vector<hcs::editor::SymbolPoint> symbol_pending_points_;
+    Vec2 symbol_cursor_local_{};
+    bool symbol_cursor_valid_{false};
+    std::optional<std::string> selected_symbol_object_id_;
+    std::optional<std::string> selected_symbol_port_id_;
+    std::optional<std::size_t> selected_symbol_vertex_index_;
+    std::size_t symbol_preset_index_{0};
+    std::size_t next_input_port_serial_{1};
+    std::size_t next_output_port_serial_{1};
+    std::string symbol_text_buffer_;
+    std::size_t symbol_text_cursor_{0};
+    std::optional<std::size_t> symbol_text_selection_anchor_;
+    std::string symbol_text_error_;
     std::string pending_port_id_;
     bool library_panel_{false};
     std::string library_search_;

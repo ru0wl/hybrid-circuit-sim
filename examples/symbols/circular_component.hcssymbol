@@ -1,0 +1,8 @@
+HCSS 1
+size width=144 height=144
+shape circle id=body x=18 y=18 width=108 height=108 radius=54 start=0 end=360 points="" fill=#26384C stroke=#8DB8E8 stroke_width=3 visible=1 locked=0
+text id=title x=72 y=69 size=15 color=#FFFFFF align=center role=ui visible=1 locked=0 value="CMP"
+text id=mode x=72 y=88 size=9 color=#BFD7F2 align=center role=code visible=1 locked=0 value="A == B"
+port id=a x=18 y=48 orientation=left angle=0 label="A" show_label=1 visible=1
+port id=b x=18 y=96 orientation=left angle=0 label="B" show_label=1 visible=1
+port id=equal x=126 y=72 orientation=right angle=0 label="EQ" show_label=1 visible=1

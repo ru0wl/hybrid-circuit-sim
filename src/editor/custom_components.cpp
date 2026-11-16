@@ -67,11 +67,72 @@ const Pin* find_pin_by_key(const Component& component, PinDirection direction, s
     return found == pins.end() ? nullptr : &*found;
 }
 
+SymbolDefinition effective_symbol(const CustomComponentDefinition& definition) {
+    std::vector<std::pair<std::string, std::string>> records;
+    records.reserve(definition.ports.size());
+    for (const auto& port : definition.ports)
+        records.emplace_back(port.id, port.direction == PinDirection::Input ? "input" : "output");
+    if (definition.symbol.objects.empty() && definition.symbol.ports.empty())
+        return make_default_symbol(definition.size, records);
+    auto symbol = definition.symbol;
+    symbol.size = definition.size;
+    const auto defaults = make_default_symbol(definition.size, records);
+    for (const auto& port : defaults.ports) {
+        if (std::none_of(symbol.ports.begin(), symbol.ports.end(), [&](const SymbolPortVisual& item) {
+                return item.port_id == port.port_id;
+            })) symbol.ports.push_back(port);
+    }
+    return symbol;
+}
+
 std::vector<CustomPortLayout> layouts(const CustomComponentDefinition& definition) {
+    const auto symbol = effective_symbol(definition);
     std::vector<CustomPortLayout> result;
     result.reserve(definition.ports.size());
-    for (const auto& port : definition.ports) result.push_back({port.id, port.name, port.direction});
+    for (const auto& port : definition.ports) {
+        CustomPortLayout layout{port.id, port.name, port.direction};
+        const auto visual = std::find_if(symbol.ports.begin(), symbol.ports.end(), [&](const SymbolPortVisual& item) {
+            return item.port_id == port.id;
+        });
+        if (visual != symbol.ports.end()) {
+            layout.local_position = {visual->x, visual->y};
+            layout.explicit_position = true;
+        }
+        result.push_back(std::move(layout));
+    }
     return result;
+}
+
+bool same_definition_logic(const CustomComponentDefinition& a, const CustomComponentDefinition& b) {
+    if (a.id != b.id || a.ports.size() != b.ports.size() || a.implementation.components().size() != b.implementation.components().size() ||
+        a.implementation.wires().size() != b.implementation.wires().size()) return false;
+    for (const auto& port : a.ports) {
+        const auto found = std::find_if(b.ports.begin(), b.ports.end(), [&](const CustomPort& other) {
+            return other.id == port.id && other.direction == port.direction && other.terminal_component == port.terminal_component;
+        });
+        if (found == b.ports.end()) return false;
+    }
+    std::map<ComponentId, const Component*> components_b;
+    for (const auto& item : b.implementation.components()) components_b.emplace(item.id, &item);
+    for (const auto& item : a.implementation.components()) {
+        const auto found = components_b.find(item.id);
+        if (found == components_b.end()) return false;
+        const auto& other = *found->second;
+        if (item.type != other.type || item.input_value != other.input_value ||
+            item.dff_initial_state != other.dff_initial_state || item.definition_id != other.definition_id) return false;
+    }
+    auto wire_keys = [](const CircuitEditor& circuit) {
+        std::vector<std::tuple<ComponentId, std::string, ComponentId, std::string>> keys;
+        for (const auto& wire : circuit.wires()) {
+            const auto* output = circuit.find_pin(wire.output_pin);
+            const auto* input = circuit.find_pin(wire.input_pin);
+            if (!output || !input) continue;
+            keys.emplace_back(output->owner, output->key, input->owner, input->key);
+        }
+        std::sort(keys.begin(), keys.end());
+        return keys;
+    };
+    return wire_keys(a.implementation) == wire_keys(b.implementation);
 }
 
 bool clone_component(const Component& source, CircuitEditor& destination,
@@ -100,6 +161,9 @@ bool clone_component(const Component& source, CircuitEditor& destination,
         target_pin.local_position = source_pin->local_position;
     }
     target->size = source.size;
+    if (source.type == ComponentType::Custom)
+        (void)destination.set_component_transform(source.id, source.rotation_quadrants,
+                                                  source.flip_horizontal, source.flip_vertical);
     return true;
 }
 
@@ -158,6 +222,18 @@ bool validate_definition_shape(const CustomComponentDefinition& definition, Pers
             if (!terminal_components.contains(component.id))
                 return fail(error, 0, "internal " + std::string(component_name(component.type)) + " component " + std::to_string(component.id) + " is not mapped to an external port");
         }
+    }
+    const auto visual = effective_symbol(definition);
+    SymbolError visual_error;
+    if (!validate_symbol(visual, visual_error))
+        return fail(error, visual_error.line, "invalid visual symbol: " + visual_error.describe());
+    for (const auto& port : definition.ports) {
+        if (std::none_of(visual.ports.begin(), visual.ports.end(), [&](const SymbolPortVisual& item) { return item.port_id == port.id; }))
+            return fail(error, 0, "visual symbol is missing external port '" + port.id + "'");
+    }
+    for (const auto& visual_port : visual.ports) {
+        if (!port_ids.contains(visual_port.port_id))
+            return fail(error, 0, "visual symbol references unknown external port '" + visual_port.port_id + "'");
     }
     error = {};
     return true;
@@ -443,9 +519,12 @@ bool validate_definition_refs(const CustomComponentDefinition& definition, const
 bool ComponentLibrary::add(CustomComponentDefinition definition, PersistenceError& error) {
     if (!validate_definition_shape(definition, error)) return false;
     if (definitions_.contains(definition.id)) return fail(error, 0, "duplicate component definition ID '" + definition.id + "'");
+    definition.symbol = effective_symbol(definition);
     definitions_.emplace(definition.id, std::move(definition));
     ++revision_;
     if (revision_ == 0) ++revision_;
+    ++logic_revision_;
+    if (logic_revision_ == 0) ++logic_revision_;
     error = {};
     return true;
 }
@@ -454,9 +533,15 @@ bool ComponentLibrary::replace(CustomComponentDefinition definition, Persistence
     if (!validate_definition_shape(definition, error)) return false;
     const auto found = definitions_.find(definition.id);
     if (found == definitions_.end()) return fail(error, 0, "component definition does not exist");
+    const bool logic_changed = !same_definition_logic(found->second, definition);
+    definition.symbol = effective_symbol(definition);
     found->second = std::move(definition);
     ++revision_;
     if (revision_ == 0) ++revision_;
+    if (logic_changed) {
+        ++logic_revision_;
+        if (logic_revision_ == 0) ++logic_revision_;
+    }
     error = {};
     return true;
 }
@@ -465,6 +550,8 @@ bool ComponentLibrary::erase(std::string_view id) {
     if (definitions_.erase(std::string(id)) == 0) return false;
     ++revision_;
     if (revision_ == 0) ++revision_;
+    ++logic_revision_;
+    if (logic_revision_ == 0) ++logic_revision_;
     return true;
 }
 
@@ -673,6 +760,11 @@ bool serialize_component_definition(const CustomComponentDefinition& definition,
         out << "port " << (port.direction == PinDirection::Input ? "input" : "output") << ' '
             << port.id << ' ' << quote(port.name) << " terminal=" << port.terminal_component << '\n';
     }
+    std::string symbol_text;
+    SymbolError symbol_error;
+    if (!serialize_symbol(effective_symbol(definition), symbol_text, symbol_error))
+        return fail(error, symbol_error.line, "cannot serialize visual symbol: " + symbol_error.describe());
+    out << "symbol-begin\n" << symbol_text << "symbol-end\n";
     out << "implementation\n" << implementation;
     text = out.str();
     error = {};
@@ -686,15 +778,36 @@ bool parse_component_definition(std::string_view text, const ComponentLibrary& l
     bool header = false, id_seen = false, name_seen = false, description_seen = false, category_seen = false, size_seen = false;
     std::size_t line_number = 0;
     std::string_view implementation;
+    std::string symbol_text;
+    bool in_symbol = false;
     while (!text.empty()) {
         ++line_number;
         const auto newline = text.find('\n');
         const auto line = text.substr(0, newline);
         const auto after = newline == std::string_view::npos ? std::string_view{} : text.substr(newline + 1);
+        if (line == "symbol-begin") {
+            if (in_symbol || !symbol_text.empty()) return fail(error, line_number, "duplicate symbol section");
+            in_symbol = true;
+            text = after;
+            continue;
+        }
+        if (line == "symbol-end") {
+            if (!in_symbol) return fail(error, line_number, "symbol-end without symbol-begin");
+            in_symbol = false;
+            text = after;
+            continue;
+        }
         if (line == "implementation") {
+            if (in_symbol) return fail(error, line_number, "missing symbol-end before implementation");
             implementation = after;
             text = {};
             break;
+        }
+        if (in_symbol) {
+            symbol_text.append(line);
+            symbol_text.push_back('\n');
+            text = after;
+            continue;
         }
         std::istringstream in{std::string(line)};
         std::string keyword;
@@ -748,6 +861,16 @@ bool parse_component_definition(std::string_view text, const ComponentLibrary& l
     if (!header) return fail(error, 1, "missing component definition header");
     if (!id_seen || !name_seen || !description_seen || !category_seen || !size_seen || implementation.empty())
         return fail(error, 0, "component definition is missing required metadata or implementation section");
+    if (!symbol_text.empty()) {
+        SymbolError symbol_error;
+        if (!parse_symbol(symbol_text, candidate.symbol, symbol_error))
+            return fail(error, symbol_error.line, "invalid component symbol: " + symbol_error.describe());
+        if (std::abs(candidate.symbol.size.x - candidate.size.x) > 0.001F ||
+            std::abs(candidate.symbol.size.y - candidate.size.y) > 0.001F)
+            return fail(error, 0, "component size and symbol size must match");
+    } else {
+        candidate.symbol = effective_symbol(candidate);
+    }
     std::string implementation_name;
     if (!parse_circuit(implementation, candidate.implementation, implementation_name, library, error)) return false;
     if (!validate_definition_shape(candidate, error)) return false;
@@ -800,6 +923,7 @@ bool create_empty_component_definition(std::string id, std::string name, std::st
     candidate.name = std::move(name);
     candidate.category = std::move(category);
     candidate.description = "User-defined component";
+    candidate.symbol = make_default_symbol(candidate.size);
     if (!validate_definition_shape(candidate, error)) return false;
     definition = std::move(candidate);
     error = {};
@@ -841,6 +965,22 @@ bool add_custom_component_port(CustomComponentDefinition& definition, std::strin
     const auto new_output_count = output_count + (direction == PinDirection::Output ? 1U : 0U);
     const auto max_rows = std::max(new_input_count, new_output_count);
     definition.size.y = std::max(definition.size.y, 48.0F + 32.0F * static_cast<float>(max_rows));
+    if (definition.symbol.objects.empty() && definition.symbol.ports.empty())
+        definition.symbol = make_default_symbol(definition.size);
+    definition.symbol.size = definition.size;
+    SymbolPortVisual visual_port;
+    visual_port.port_id = definition.ports.back().id;
+    visual_port.label = definition.ports.back().name;
+    if (direction == PinDirection::Input) {
+        visual_port.x = 0.0F;
+        visual_port.y = definition.size.y * static_cast<float>(new_input_count) / static_cast<float>(new_input_count + 1U);
+        visual_port.orientation = SymbolPortOrientation::Left;
+    } else {
+        visual_port.x = definition.size.x;
+        visual_port.y = definition.size.y * static_cast<float>(new_output_count) / static_cast<float>(new_output_count + 1U);
+        visual_port.orientation = SymbolPortOrientation::Right;
+    }
+    definition.symbol.ports.push_back(std::move(visual_port));
     error = {};
     return true;
 }
@@ -856,6 +996,8 @@ bool rename_custom_component_port(CustomComponentDefinition& definition, std::st
         return port.id != id && port.direction == found->direction && port.name == name;
     })) return fail(error, 0, "another port already uses this display name");
     found->name = std::move(name);
+    const auto visual = std::find_if(definition.symbol.ports.begin(), definition.symbol.ports.end(), [&](const SymbolPortVisual& item) { return item.port_id == id; });
+    if (visual != definition.symbol.ports.end()) visual->label = found->name;
     error = {};
     return true;
 }
@@ -868,6 +1010,7 @@ bool remove_custom_component_port(CustomComponentDefinition& definition, std::st
     if (!definition.implementation.remove_component(found->terminal_component))
         return fail(error, 0, "could not remove the internal port terminal component");
     definition.ports.erase(found);
+    std::erase_if(definition.symbol.ports, [&](const SymbolPortVisual& item) { return item.port_id == id; });
     error = {};
     return true;
 }
@@ -907,6 +1050,10 @@ bool apply_component_definition_transactionally(ComponentLibrary& library, Circu
     root.replace_with(std::move(candidate_root));
     error = {};
     return true;
+}
+
+std::vector<CustomPortLayout> custom_component_port_layouts(const CustomComponentDefinition& definition) {
+    return layouts(definition);
 }
 
 std::string make_definition_id(std::string_view name) {

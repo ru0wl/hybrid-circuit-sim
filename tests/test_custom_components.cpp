@@ -314,11 +314,28 @@ void test_definition_and_circuit_persistence() {
     ComponentLibrary library;
     PersistenceError error;
     auto definition = make_half_adder();
+    definition.symbol = make_default_symbol(definition.size, {{"a","input"},{"b","input"},
+        {"sum","output"},{"carry","output"}});
+    SymbolShape custom_body;
+    custom_body.id = "hex_body";
+    custom_body.type = SymbolShapeType::Polygon;
+    custom_body.points = {{80,8},{150,30},{150,80},{80,102},{10,80},{10,30}};
+    definition.symbol.objects = {custom_body};
+    SymbolText title;
+    title.id = "caption"; title.value = "HALF ADDER"; title.x = 80; title.y = 52;
+    title.size = 12; title.alignment = SymbolTextAlignment::Center;
+    definition.symbol.objects.emplace_back(title);
     require(library.add(definition, error), "add persistence fixture definition");
     std::string component_text;
     require(serialize_component_definition(definition, library, component_text, error), "serialize component definition");
     CustomComponentDefinition parsed_definition;
     require(parse_component_definition(component_text, library, parsed_definition, error), "parse component definition");
+    require(component_text.find("symbol-begin\nHCSS 1\n") != std::string::npos,
+            "component definition embeds its versioned symbol section");
+    require(parsed_definition.symbol.objects.size() == 2 && parsed_definition.symbol.ports.size() == 4,
+            "component definition roundtrip retains custom shapes, text and port coordinates");
+    require(parsed_definition.symbol.objects.front().index() == definition.symbol.objects.front().index(),
+            "component definition roundtrip retains vector object kind");
     std::string second_text;
     require(serialize_component_definition(parsed_definition, library, second_text, error), "reserialize component definition");
     require(component_text == second_text, "component definition serialization must be deterministic");

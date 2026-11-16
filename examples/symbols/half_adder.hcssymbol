@@ -1,0 +1,9 @@
+HCSS 1
+size width=180 height=124
+shape rounded_rect id=body x=8 y=8 width=164 height=108 radius=14 start=0 end=360 points="" fill=#202630 stroke=#D0D7E2 stroke_width=2 visible=1 locked=0
+text id=title x=90 y=32 size=13 color=#E0E9F4 align=center role=ui visible=1 locked=0 value="HALF ADDER"
+text id=sum_label x=90 y=65 size=11 color=#AFC5DD align=center role=code visible=1 locked=0 value="A XOR B"
+port id=a x=8 y=48 orientation=left angle=0 label="A" show_label=1 visible=1
+port id=b x=8 y=88 orientation=left angle=0 label="B" show_label=1 visible=1
+port id=sum x=172 y=48 orientation=right angle=0 label="SUM" show_label=1 visible=1
+port id=carry x=172 y=88 orientation=right angle=0 label="CARRY" show_label=1 visible=1

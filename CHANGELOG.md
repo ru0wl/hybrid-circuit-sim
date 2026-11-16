@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Improved the Phase 5.5 designer feedback: selected objects now show a resize frame/handle, polygon and path tools preview the unfinished contour, and drag-created shapes show a live outline before release.
+- Added direct stroke-width and text-size increment/decrement controls; the fill/stroke palette now also applies to standalone paths.
+- Fixed freeform line creation so endpoint order and negative slopes are retained, constrained circle creation to the symbol viewport, and prevented reusing a deleted custom-port ID when adding another input/output port.
+- Added regression coverage for negative-slope line validation, hit testing, movement, resizing and deterministic serialization.
+
 - Reduced the default UI/code TTF point sizes slightly and added font-metric measurement so toolbar labels, component names and pin labels use consistent horizontal/vertical alignment instead of fixed character-width estimates.
 - Centered toolbar button text within each button and corrected custom output-port labels to align to the outside edge of their pins.
 - Moved hardware/CPU/SIMD/worker information out of the second toolbar row into a dedicated second status-bar line; increased the status area height to prevent text from overlapping controls.
@@ -9,6 +14,19 @@
 - Render UI/code text at its effective font size using cached SDL3_ttf font instances, avoiding blurry upscaled 14-point font textures. The ASCII fallback now snaps glyph pixels to the integer grid.
 - Show the active simulation backend in the backend button, report switch success/failure in the GUI, and add `B` as a backend-cycle shortcut.
 - Support left-button drag panning on empty canvas space while preserving component dragging, wire creation, input toggles and middle-button panning.
+
+## Phase 5.5 — visual component designer and custom symbols
+
+- Added a UI-independent `SymbolDefinition` model separating custom-component logic, logical interface ports and visual appearance.
+- Added deterministic, versioned `HCSS 1` symbol serialization/parsing with bounded geometry, IDs, colors, paths, labels, port endpoints and line-aware validation.
+- Added editable vector primitives (rectangle, rounded rectangle, circle, ellipse, line, polyline, polygon, arc and path), text objects, visual ports, visibility/lock state and painter order.
+- Added geometry editing operations for moving/resizing/rotating/duplicating/alignment, polygon/path vertex insertion/movement/removal, path closing/opening and arbitrary-angle port orientation.
+- Embedded the symbol in optional `.hcscomponent` `symbol-begin` / `symbol-end` sections; legacy HCSC definitions without a symbol continue to load with the default appearance.
+- Added a shared SDL3 `SymbolRenderer` for the root editor, library previews and Visual Component Designer; custom wire endpoints use the visual port coordinates and follow instance rotation/flip transforms.
+- Added synchronized visual and HCSS source editing with parse/validate/replace behavior; invalid text preserves the prior symbol and edited source buffer.
+- Added visual-only revision handling so changing appearance does not rebuild/reset `CircuitRuntime` or change simulation behavior.
+- Added five documented HCSS samples and model/serialization/compatibility/port-transform/runtime-independence tests.
+- Real SDL3 GUI build and interactive visual verification remain unverified on this headless host; paths are straight-segment contours, and the inspector's exact numeric/style editing is currently provided by HCSS source rather than a full property grid.
 
 ## Phase 5.4 — custom components, library and typography
 

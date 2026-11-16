@@ -89,11 +89,11 @@ void CircuitRuntime::synchronize(CircuitEditor& editor, const ComponentLibrary& 
     const auto has_custom = std::any_of(editor.components().begin(), editor.components().end(),
         [](const Component& component) { return component.type == ComponentType::Custom; });
     const bool rebuild_required = !simulator_ || synchronized_revision_ != editor.structural_revision() ||
-        (has_custom && synchronized_library_revision_ != library.revision());
+        (has_custom && synchronized_library_revision_ != library.logic_revision());
     if (rebuild_required) {
         if (!has_custom) {
             rebuild(editor);
-            synchronized_library_revision_ = library.revision();
+            synchronized_library_revision_ = library.logic_revision();
         } else {
             ExpandedCircuit expanded;
             HierarchyError hierarchy_error;
@@ -128,7 +128,7 @@ void CircuitRuntime::synchronize(CircuitEditor& editor, const ComponentLibrary& 
             pin_signals_ = std::move(root_pin_signals);
             input_bindings_ = std::move(root_inputs);
             synchronized_revision_ = editor.structural_revision();
-            synchronized_library_revision_ = library.revision();
+            synchronized_library_revision_ = library.logic_revision();
             synchronized_input_revision_ = 0;
         }
     }

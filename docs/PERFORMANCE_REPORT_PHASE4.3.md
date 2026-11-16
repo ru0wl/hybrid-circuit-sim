@@ -79,7 +79,7 @@ With all lanes active, hybrid is 64.3% faster than optimized IR event but **32.7
 
 ## Profiling counters
 
-Opt-in profile exports cover `region-sparse-chains` and `feedback-stable` with three measured repetitions each. They are stored separately in `profiling-results-phase4.3.csv`, `profiling-results-phase4.3-raw.csv`, and `.json`.
+Opt-in profile exports cover `region-sparse-chains` and `feedback-stable` with three measured repetitions each. They are stored separately in `../benchmark-results/profiling-results-phase4.3.csv`, `../benchmark-results/profiling-results-phase4.3-raw.csv`, and `.json`.
 
 For hybrid, the profile counters include region scheduling attempts, successfully scheduled/processed regions, region operation evaluations, fanout edges visited, duplicate operation scheduling, feedback queue sizes, and signal changes. In the sparse-chain workload, the maximum pending region queue was 64 and each processed acyclic region evaluated four operations. In the feedback-stable workload, the maximum feedback operation queue length was 32.
 
@@ -87,7 +87,7 @@ Do not use profiled elapsed time as an unbiased throughput result. Fine-grained 
 
 ## Phase 4.2 comparison
 
-`benchmark-comparison-phase4.2-phase4.3.csv` contains the 78 matched historical scenario/backend pairs (13 scenarios × six existing backend modes). It is explicitly **directional and unpaired**: Phase 4.2 and Phase 4.3 independently calibrated iteration counts and checksums, and the number of samples differs. The file reports both step counts/checksums and a throughput ratio; do not interpret it as a controlled A/B experiment.
+`../benchmark-results/benchmark-comparison-phase4.2-phase4.3.csv` contains the 78 matched historical scenario/backend pairs (13 scenarios × six existing backend modes). It is explicitly **directional and unpaired**: Phase 4.2 and Phase 4.3 independently calibrated iteration counts and checksums, and the number of samples differs. The file reports both step counts/checksums and a throughput ratio; do not interpret it as a controlled A/B experiment.
 
 The Phase 4.2 benchmark and profiling files are preserved unchanged.
 

@@ -40,7 +40,7 @@ struct Options {
     std::uint32_t warmup{4};
     std::string scenario{"all"};
     std::filesystem::path cache{std::filesystem::temp_directory_path() / "hcs-bench-phase4-cache"};
-    std::filesystem::path output_prefix{"benchmark-results-phase4"};
+    std::filesystem::path output_prefix{"benchmark-results/benchmark-results"};
     std::string compile_mode{"both"};
     bool profile{false};
     double min_sample_ms{20.0};
@@ -900,6 +900,8 @@ int main(int argc, char** argv) {
                 if (event_step_ms > native_step_ms) cold->break_even_vs_ir_event = cold->preparation_ms / (event_step_ms - native_step_ms);
             }
         }
+        if (!options.output_prefix.parent_path().empty())
+            std::filesystem::create_directories(options.output_prefix.parent_path());
         write_summary_csv(options.output_prefix.string() + ".csv", summaries);
         write_raw_csv(options.output_prefix.string() + "-raw.csv", raw);
         write_json(options.output_prefix.string() + ".json", summaries);

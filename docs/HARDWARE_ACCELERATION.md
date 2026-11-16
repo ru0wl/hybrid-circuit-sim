@@ -79,7 +79,7 @@ The benchmark command below writes raw and summary CSV files in the current dire
 
 It uses deterministic workloads, a separate warm-up simulator, a separate measured simulator, rotated configuration order, equal tick counts, checksum checks, and operation-count checks. It reports median, mean, min/max, standard deviation, P95, tick throughput, operation throughput, simulator setup time, process CPU time/approximate process CPU percentage, and actual SIMD/parallel path counters.
 
-The Phase 5.2 host was a virtualized Intel Xeon Platinum 8573C x86-64 guest with 3 logical CPUs visible and a 2-CPU cgroup quota. It supported AVX2. Results are in `hardware-bench-results-phase5.2-{raw,summary}.csv`. Neither AVX2 nor multicore won consistently. Auto therefore remains scalar/off. Detailed results and caveats are in `docs/SIMD_IMPLEMENTATION.md` and `docs/MULTICORE_EXECUTION.md`.
+The Phase 5.2 host was a virtualized Intel Xeon Platinum 8573C x86-64 guest with 3 logical CPUs visible and a 2-CPU cgroup quota. It supported AVX2. Results are in `../benchmark-results/hardware-bench-results-phase5.2-{raw,summary}.csv`. Neither AVX2 nor multicore won consistently. Auto therefore remains scalar/off. Detailed results and caveats are in `docs/SIMD_IMPLEMENTATION.md` and `docs/MULTICORE_EXECUTION.md`.
 
 ## Disabling acceleration
 

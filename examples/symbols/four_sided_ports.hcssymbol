@@ -1,0 +1,8 @@
+HCSS 1
+size width=180 height=140
+shape rounded_rect id=body x=14 y=14 width=152 height=112 radius=12 start=0 end=360 points="" fill=#202630 stroke=#D0D7E2 stroke_width=2 visible=1 locked=0
+text id=title x=90 y=72 size=13 color=#E0E9F4 align=center role=ui visible=1 locked=0 value="FOUR SIDES"
+port id=left_in x=14 y=70 orientation=left angle=0 label="L" show_label=1 visible=1
+port id=right_out x=166 y=70 orientation=right angle=0 label="R" show_label=1 visible=1
+port id=top_in x=90 y=14 orientation=top angle=0 label="T" show_label=1 visible=1
+port id=bottom_out x=90 y=126 orientation=bottom angle=0 label="B" show_label=1 visible=1

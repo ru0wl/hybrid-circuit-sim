@@ -109,7 +109,7 @@ Three candidates were measured and reverted:
 2. Replace interpreted-event `std::vector<bool>` scheduled flags with byte flags. Changes varied by scenario/backend, including substantial positive and negative outliers; no robust gain.
 3. Flatten interpreted-event fanout into CSR offsets and edge storage. Results were near zero or negative on key fanout workloads and ranged both directions on other scenarios.
 
-No candidate met the retention criterion. The final runtime code therefore remains unchanged from Phase 4.1. The detailed A/B sample data is in `optimization-experiments-phase4.2.csv` and `optimization-experiments-phase4.2-raw.csv`.
+No candidate met the retention criterion. The final runtime code therefore remains unchanged from Phase 4.1. The detailed A/B sample data is in `../benchmark-results/optimization-experiments-phase4.2.csv` and `../benchmark-results/optimization-experiments-phase4.2-raw.csv`.
 
 ## Hardware profiling and SIMD feasibility
 
