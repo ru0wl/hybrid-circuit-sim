@@ -2,7 +2,9 @@
 
 #include "hcs/editor/camera.hpp"
 #include "hcs/editor/model.hpp"
+#include "hcs/editor/custom_components.hpp"
 #include "hcs/editor/runtime.hpp"
+#include "font_manager.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -22,6 +24,7 @@ public:
                 const editor::CircuitRuntime& runtime,
                 const editor::Camera2D& camera,
                 bool show_grid,
+                const editor::ComponentLibrary& library,
                 std::optional<WirePreview> preview = std::nullopt) const;
 
     static void fill_rect(SDL_Renderer* renderer, float x, float y, float width, float height,
@@ -29,8 +32,10 @@ public:
     static void outline_rect(SDL_Renderer* renderer, float x, float y, float width, float height,
                              SDL_Color color);
     static void line(SDL_Renderer* renderer, editor::Vec2 a, editor::Vec2 b, SDL_Color color);
+    [[nodiscard]] static SDL_FPoint text_size(const char* value, float scale,
+                                              FontRole role = FontRole::Ui);
     static void text(SDL_Renderer* renderer, float x, float y, const char* value,
-                     float scale, SDL_Color color);
+                     float scale, SDL_Color color, FontRole role = FontRole::Ui);
 };
 
 } // namespace hcs::gui

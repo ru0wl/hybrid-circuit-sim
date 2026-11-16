@@ -113,8 +113,31 @@ Remaining verification and later work:
 
 - Build and launch the GUI against a real SDL3 development package and desktop session; exercise text input, clipboard, path entry, unsaved-change prompts and actual mouse/keyboard interaction.
 - Exercise real window resize/high-DPI behavior with SDL3.
-- Undo/redo, auto-routing, custom/user-defined components, component libraries and hierarchical subcircuits remain deferred to later phases.
+- Undo/redo and auto-routing remain deferred. Custom/user-defined components, component library management and hierarchical subcircuits are addressed in Phase 5.4.
 
+
+
+
+## Phase 5.4 — custom components, component library and typography
+
+Implemented in the current source tree:
+
+- [x] Versioned `.hcscomponent` definitions with stable definition/port IDs, metadata, internal `.hcs` graph, deterministic serialization and validation.
+- [x] Root `.hcs` custom instance references without duplicating internal implementation graphs; missing definition references fail without replacing the active circuit.
+- [x] Transactional selection extraction, cut-wire interface ports and root graph replacement.
+- [x] GUI creation of empty definitions, editing of definitions, port add/remove/rename, metadata editing, nested custom placement and transactional apply/cancel.
+- [x] Built-in/custom component catalogue with search, categories, descriptions and named port previews.
+- [x] Hierarchy validation and flattening into the existing CircuitBuilder/Simulator path; recursion, depth, expanded-component and dependency-context limits.
+- [x] Independent per-instance sequential state and Half Adder, nested Full Adder and DFF Cell coverage across six existing backends.
+- [x] Central UI/code FontManager with optional SDL3_ttf system-font discovery, display scaling, cleanup and a fallback renderer.
+- [x] GCC/Clang Release builds, CMake/Makefile tests and custom-component regression tests in a headless environment.
+
+Remaining verification and later work:
+
+- [ ] Build and interact with the GUI against real SDL3/SDL3_ttf on a desktop host; verify mouse/keyboard workflows, text input, library placement and font glyph coverage.
+- [ ] Add a dedicated selection port-mapping wizard for arbitrary internal signal selection.
+- [ ] Add self-contained circuit bundles that include referenced `.hcscomponent` dependencies.
+- [ ] Expose expanded internal-signal/source-instance maps through a debugger/inspection API.
 
 ## Phase 5.2 — experimental hardware acceleration
 

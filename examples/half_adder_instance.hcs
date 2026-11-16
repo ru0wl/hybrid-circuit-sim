@@ -1,0 +1,13 @@
+HCS 1
+circuit "Half Adder Instance"
+
+component 0 Input x=40 y=100 value=0
+component 1 Input x=40 y=220 value=0
+component 2 CUSTOM definition=arithmetic.half-adder x=300 y=120
+component 3 Output x=620 y=100
+component 4 Output x=620 y=220
+
+wire 0.out -> 2.a
+wire 1.out -> 2.b
+wire 2.sum -> 3.in
+wire 2.carry -> 4.in

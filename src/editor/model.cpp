@@ -30,6 +30,10 @@ Pin& CircuitEditor::append_pin(Component& component, PinDirection direction, Vec
     pin.direction = direction;
     pin.owner = component.id;
     pin.local_position = local_position;
+    switch (direction) {
+        case PinDirection::Input: pin.key = "in"; break;
+        case PinDirection::Output: pin.key = "out"; break;
+    }
     auto& collection = direction == PinDirection::Input ? component.inputs : component.outputs;
     collection.push_back(pin);
     return collection.back();
@@ -82,12 +86,177 @@ bool CircuitEditor::add_component_with_id(ComponentId id, ComponentType type, Ve
             append_pin(component, PinDirection::Input, {0.0F, 67.0F});
             append_pin(component, PinDirection::Output, {128.0F, 48.0F});
             break;
+        case ComponentType::Custom:
+            return false;
+    }
+    if (component.type == ComponentType::Output || component.type == ComponentType::Not) {
+        if (!component.inputs.empty()) component.inputs[0].key = "in";
+    } else if (component.type == ComponentType::And || component.type == ComponentType::Or || component.type == ComponentType::Xor) {
+        component.inputs[0].key = "in0";
+        component.inputs[1].key = "in1";
+    } else if (component.type == ComponentType::DFlipFlop) {
+        component.inputs[0].key = "d";
+        component.inputs[1].key = "clk";
+        component.outputs[0].key = "q";
     }
 
     components_.push_back(std::move(component));
     if (id >= next_component_id_) next_component_id_ = id + 1;
     mark_structure_changed();
     if (type == ComponentType::Input && input_value) mark_input_changed();
+    return true;
+}
+
+
+ComponentId CircuitEditor::add_custom_component(std::string definition_id, Vec2 position,
+                                                   const std::vector<CustomPortLayout>& ports, Vec2 size) {
+    if (next_component_id_ == kInvalidComponent) return kInvalidComponent;
+    const auto id = next_component_id_;
+    if (!add_custom_component_with_id(id, std::move(definition_id), position, ports, size)) return kInvalidComponent;
+    return id;
+}
+
+bool CircuitEditor::add_custom_component_with_id(ComponentId id, std::string definition_id,
+                                                  Vec2 position, const std::vector<CustomPortLayout>& ports,
+                                                  Vec2 requested_size) {
+    if (id == kInvalidComponent || find_component(id) != nullptr || definition_id.empty() ||
+        definition_id.size() > 128 ||
+        !std::isfinite(position.x) || !std::isfinite(position.y)) return false;
+    const bool has_requested_size = requested_size.x != 0.0F || requested_size.y != 0.0F;
+    if (has_requested_size && (!std::isfinite(requested_size.x) || !std::isfinite(requested_size.y) ||
+        requested_size.x < 48.0F || requested_size.y < 48.0F ||
+        requested_size.x > 10'000'000.0F || requested_size.y > 10'000'000.0F)) return false;
+    Component component;
+    component.id = id;
+    component.type = ComponentType::Custom;
+    component.position = position;
+    component.definition_id = std::move(definition_id);
+    std::size_t input_count = 0;
+    std::size_t output_count = 0;
+    std::vector<std::string> seen_port_ids;
+    for (const auto& port : ports) {
+        if (port.id.empty() || port.id.size() > 128 || port.name.empty() || port.name.size() > 256 ||
+            std::find(seen_port_ids.begin(), seen_port_ids.end(), port.id) != seen_port_ids.end() ||
+            (port.direction != PinDirection::Input && port.direction != PinDirection::Output)) return false;
+        seen_port_ids.push_back(port.id);
+        if (port.direction == PinDirection::Input) ++input_count; else ++output_count;
+    }
+    const float height = std::max(72.0F, 42.0F + 24.0F * static_cast<float>(std::max(input_count, output_count)));
+    component.size = requested_size.x > 0.0F && requested_size.y > 0.0F
+        ? requested_size : Vec2{150.0F, height};
+    std::size_t input_index = 0;
+    std::size_t output_index = 0;
+    for (const auto& port : ports) {
+        Pin pin;
+        pin.id = next_pin_id_++;
+        pin.owner = id;
+        pin.direction = port.direction;
+        pin.key = port.id;
+        if (port.direction == PinDirection::Input) {
+            const auto slot = static_cast<float>(input_index++ + 1);
+            pin.local_position = {0.0F, std::min(component.size.y - 12.0F, slot * component.size.y / static_cast<float>(input_count + 1))};
+            component.inputs.push_back(std::move(pin));
+        } else {
+            const auto slot = static_cast<float>(output_index++ + 1);
+            pin.local_position = {component.size.x, std::min(component.size.y - 12.0F, slot * component.size.y / static_cast<float>(output_count + 1))};
+            component.outputs.push_back(std::move(pin));
+        }
+    }
+    components_.push_back(std::move(component));
+    if (id >= next_component_id_) next_component_id_ = id + 1;
+    mark_structure_changed();
+    return true;
+}
+
+bool CircuitEditor::update_custom_component_layout(std::string_view definition_id,
+                                                     const std::vector<CustomPortLayout>& ports,
+                                                     Vec2 size) {
+    if (definition_id.empty() || !std::isfinite(size.x) || !std::isfinite(size.y) ||
+        size.x < 48.0F || size.y < 48.0F || size.x > 10'000'000.0F || size.y > 10'000'000.0F)
+        return false;
+
+    std::vector<std::string> ids;
+    std::size_t input_count = 0;
+    std::size_t output_count = 0;
+    for (const auto& port : ports) {
+        if (port.id.empty() || port.id.size() > 128 || port.name.empty() || port.name.size() > 256 ||
+            std::find(ids.begin(), ids.end(), port.id) != ids.end() ||
+            (port.direction != PinDirection::Input && port.direction != PinDirection::Output)) return false;
+        ids.push_back(port.id);
+        if (port.direction == PinDirection::Input) ++input_count;
+        else ++output_count;
+    }
+
+    CircuitEditor candidate = *this;
+    bool changed = false;
+    for (auto& component : candidate.components_) {
+        if (component.type != ComponentType::Custom || component.definition_id != definition_id) continue;
+        changed = true;
+        const auto has_wire = [&](const Pin& pin) {
+            return std::any_of(candidate.wires_.begin(), candidate.wires_.end(), [&](const Wire& wire) {
+                return wire.output_pin == pin.id || wire.input_pin == pin.id;
+            });
+        };
+        for (const auto& old_pin : component.inputs) {
+            const auto replacement = std::find_if(ports.begin(), ports.end(), [&](const CustomPortLayout& port) {
+                return port.id == old_pin.key && port.direction == PinDirection::Input;
+            });
+            if (replacement == ports.end() && has_wire(old_pin)) return false;
+        }
+        for (const auto& old_pin : component.outputs) {
+            const auto replacement = std::find_if(ports.begin(), ports.end(), [&](const CustomPortLayout& port) {
+                return port.id == old_pin.key && port.direction == PinDirection::Output;
+            });
+            if (replacement == ports.end() && has_wire(old_pin)) return false;
+        }
+
+        std::vector<Pin> new_inputs;
+        std::vector<Pin> new_outputs;
+        new_inputs.reserve(input_count);
+        new_outputs.reserve(output_count);
+        std::size_t input_index = 0;
+        std::size_t output_index = 0;
+        for (const auto& port : ports) {
+            auto& old_pins = port.direction == PinDirection::Input ? component.inputs : component.outputs;
+            const auto old = std::find_if(old_pins.begin(), old_pins.end(), [&](const Pin& pin) {
+                return pin.key == port.id;
+            });
+            Pin pin;
+            if (old != old_pins.end()) {
+                pin = *old;
+            } else {
+                if (candidate.next_pin_id_ == kInvalidPin) return false;
+                pin.id = candidate.next_pin_id_++;
+                pin.owner = component.id;
+                pin.direction = port.direction;
+                pin.key = port.id;
+                pin.simulation_signal = kInvalidSignal;
+            }
+            if (port.direction == PinDirection::Input) {
+                const float slot = static_cast<float>(++input_index);
+                pin.local_position = {0.0F, std::min(size.y - 12.0F,
+                    slot * size.y / static_cast<float>(input_count + 1))};
+                new_inputs.push_back(std::move(pin));
+            } else {
+                const float slot = static_cast<float>(++output_index);
+                pin.local_position = {size.x, std::min(size.y - 12.0F,
+                    slot * size.y / static_cast<float>(output_count + 1))};
+                new_outputs.push_back(std::move(pin));
+            }
+        }
+        component.inputs = std::move(new_inputs);
+        component.outputs = std::move(new_outputs);
+        component.size = size;
+    }
+    if (!changed) return true;
+    components_ = std::move(candidate.components_);
+    wires_ = std::move(candidate.wires_);
+    next_pin_id_ = candidate.next_pin_id_;
+    for (auto& component : components_) {
+        for (auto& pin : component.inputs) pin.simulation_signal = kInvalidSignal;
+        for (auto& pin : component.outputs) pin.simulation_signal = kInvalidSignal;
+    }
+    mark_structure_changed();
     return true;
 }
 
@@ -102,6 +271,9 @@ bool CircuitEditor::remove_component(ComponentId id) {
     wires_.erase(std::remove_if(wires_.begin(), wires_.end(), [&](const Wire& wire) { return owns_pin(wire, *this); }), wires_.end());
     components_.erase(found);
     if (selection_.component == id) selection_.component.reset();
+    selection_.components.erase(std::remove(selection_.components.begin(), selection_.components.end(), id),
+                                selection_.components.end());
+    if (selection_.component && !find_component(*selection_.component)) selection_.component.reset();
     if (selection_.wire && !find_wire(*selection_.wire)) selection_.wire.reset();
     mark_structure_changed();
     return true;
@@ -273,11 +445,28 @@ std::optional<WireId> CircuitEditor::wire_at(Vec2 world, float tolerance) const 
 void CircuitEditor::select_component(std::optional<ComponentId> id) noexcept {
     selection_.component = id;
     selection_.wire.reset();
+    selection_.components.clear();
+    if (id && find_component(*id)) selection_.components.push_back(*id);
+}
+
+void CircuitEditor::toggle_component_selection(ComponentId id) noexcept {
+    if (!find_component(id)) return;
+    selection_.wire.reset();
+    const auto found = std::find(selection_.components.begin(), selection_.components.end(), id);
+    if (found == selection_.components.end()) selection_.components.push_back(id);
+    else selection_.components.erase(found);
+    selection_.component = selection_.components.empty()
+        ? std::optional<ComponentId>{} : std::optional<ComponentId>{selection_.components.back()};
+}
+
+bool CircuitEditor::is_component_selected(ComponentId id) const noexcept {
+    return std::find(selection_.components.begin(), selection_.components.end(), id) != selection_.components.end();
 }
 
 void CircuitEditor::select_wire(std::optional<WireId> id) noexcept {
     selection_.wire = id;
     selection_.component.reset();
+    selection_.components.clear();
 }
 
 void CircuitEditor::clear_selection() noexcept { selection_ = {}; }
@@ -312,6 +501,7 @@ const char* component_name(ComponentType type) noexcept {
         case ComponentType::Not: return "NOT";
         case ComponentType::Xor: return "XOR";
         case ComponentType::DFlipFlop: return "DFF";
+        case ComponentType::Custom: return "CUSTOM";
     }
     return "UNKNOWN";
 }

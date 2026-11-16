@@ -27,10 +27,11 @@ The circuit name is quoted. The parser accepts `\\`, `\"`, `\n`, `\r` and `\t` e
 | `NOT` | `in` | `out` | — |
 | `XOR` | `in0`, `in1` | `out` | — |
 | `DFF` | `d`, `clk` | `q` | `initial=0` or `initial=1` |
+| `CUSTOM` | Definition-specific input port IDs | Definition-specific output port IDs | `definition=<stable-definition-id>` |
 
 `value` and `initial` are optional when reading and default to `0`; the canonical writer always emits them for the applicable component types. `value` is only valid on `Input`, and `initial` is only valid on `DFF`. Pin names are symbolic model ports, not runtime `SignalId` values. A DFF's `clk` pin is connected and evaluated by the existing simulator in exactly the same way as before this format was introduced.
 
-A single input pin may have at most one incoming wire. Output fanout is unrestricted. An unconnected input remains valid; the existing `CircuitRuntime` ties such an input to logic zero when building the simulator.
+For `CUSTOM`, the `definition` field must resolve in the component library; the external port IDs and directions are taken from that definition. Custom definitions are not embedded in each instance. A single input pin may have at most one incoming wire. Output fanout is unrestricted. An unconnected input remains valid; the existing `CircuitRuntime` ties such an input to logic zero when building the simulator.
 
 ## Complete example
 
@@ -76,4 +77,4 @@ Validation returns exit code `0` for a valid file and non-zero for errors. Diagn
 
 ## Versioning and extension boundary
 
-The header version identifies the on-disk schema, not the simulator version. A future incompatible schema must use a new format version and explicit migration/compatibility handling; version 1 readers reject unknown versions rather than guessing. New fields must be added with documented semantics and strict type/component applicability. Custom/user-defined component types, nested subcircuits and component libraries are deliberately not represented by version 1 and remain future work.
+The header version identifies the on-disk schema, not the simulator version. A future incompatible schema must use a new format version and explicit migration/compatibility handling; version 1 readers reject unknown versions rather than guessing. New fields must be added with documented semantics and strict type/component applicability. The `.hcs` schema remains version 1 for custom-component instances: `CUSTOM definition=<id>` adds a reference without embedding implementation data. Reusable implementation graphs live in separately versioned `.hcscomponent` (`HCSC 1`) files. The component-definition format and dependency rules are documented in [`CUSTOM_COMPONENTS.md`](CUSTOM_COMPONENTS.md).

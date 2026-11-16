@@ -4,6 +4,8 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace hcs::editor {
@@ -33,6 +35,7 @@ enum class ComponentType : std::uint8_t {
     Not,
     Xor,
     DFlipFlop,
+    Custom,
 };
 
 enum class PinDirection : std::uint8_t { Input, Output };
@@ -45,6 +48,8 @@ struct Pin {
     ComponentId owner{kInvalidComponent};
     SignalId simulation_signal{kInvalidSignal};
     Vec2 local_position{};
+    // Stable symbolic key (built-in pin name or custom definition port ID).
+    std::string key;
 };
 
 struct Component {
@@ -56,6 +61,13 @@ struct Component {
     std::vector<Pin> outputs;
     bool input_value{false};
     bool dff_initial_state{false};
+    std::string definition_id;
+};
+
+struct CustomPortLayout {
+    std::string id;
+    std::string name;
+    PinDirection direction{PinDirection::Input};
 };
 
 struct Wire {
@@ -67,6 +79,7 @@ struct Wire {
 struct Selection {
     std::optional<ComponentId> component;
     std::optional<WireId> wire;
+    std::vector<ComponentId> components;
 };
 
 class CircuitEditor final {
@@ -74,6 +87,16 @@ public:
     [[nodiscard]] ComponentId add_component(ComponentType type, Vec2 position);
     [[nodiscard]] bool add_component_with_id(ComponentId id, ComponentType type, Vec2 position,
                                              bool input_value = false, bool dff_initial_state = false);
+    [[nodiscard]] ComponentId add_custom_component(std::string definition_id, Vec2 position,
+                                                   const std::vector<CustomPortLayout>& ports, Vec2 size = {});
+    [[nodiscard]] bool add_custom_component_with_id(ComponentId id, std::string definition_id,
+                                                    Vec2 position, const std::vector<CustomPortLayout>& ports,
+                                                    Vec2 size = {});
+    // Rebuilds every instance of one definition by stable port ID. Connected removed
+    // or direction-changed pins reject the operation without modifying the editor.
+    [[nodiscard]] bool update_custom_component_layout(std::string_view definition_id,
+                                                       const std::vector<CustomPortLayout>& ports,
+                                                       Vec2 size);
     [[nodiscard]] bool remove_component(ComponentId id);
     [[nodiscard]] bool move_component(ComponentId id, Vec2 position);
     [[nodiscard]] bool set_input_value(ComponentId id, bool value);
@@ -106,6 +129,9 @@ public:
     [[nodiscard]] std::optional<WireId> wire_at(Vec2 world, float tolerance) const noexcept;
 
     void select_component(std::optional<ComponentId> id) noexcept;
+    void toggle_component_selection(ComponentId id) noexcept;
+    [[nodiscard]] bool is_component_selected(ComponentId id) const noexcept;
+    [[nodiscard]] const std::vector<ComponentId>& selected_components() const noexcept { return selection_.components; }
     void select_wire(std::optional<WireId> id) noexcept;
     void clear_selection() noexcept;
     [[nodiscard]] const Selection& selection() const noexcept { return selection_; }

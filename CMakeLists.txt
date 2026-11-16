@@ -46,6 +46,7 @@ endif()
 add_library(hcs_editor
     src/editor/model.cpp
     src/editor/persistence.cpp
+    src/editor/custom_components.cpp
     src/editor/runtime.cpp
     src/editor/simulation_controller.cpp
     src/editor/camera.cpp
@@ -79,6 +80,11 @@ if(HCS_BUILD_TESTS)
     add_executable(hcs_persistence_tests tests/test_persistence.cpp)
     target_link_libraries(hcs_persistence_tests PRIVATE hcs_editor)
     add_test(NAME hcs_persistence_tests COMMAND hcs_persistence_tests)
+
+    add_executable(hcs_custom_component_tests tests/test_custom_components.cpp)
+    target_link_libraries(hcs_custom_component_tests PRIVATE hcs_editor)
+    target_compile_definitions(hcs_custom_component_tests PRIVATE HCS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME hcs_custom_component_tests COMMAND hcs_custom_component_tests)
 endif()
 
 if(HCS_BUILD_BENCHMARKS)
@@ -92,9 +98,11 @@ endif()
 if(HCS_BUILD_GUI)
     find_package(SDL3 3.2 CONFIG QUIET)
     if(SDL3_FOUND)
+        find_package(SDL3_ttf CONFIG QUIET)
         add_executable(hcs_gui
             gui/application.cpp
             gui/renderer.cpp
+            gui/font_manager.cpp
         )
         target_include_directories(hcs_gui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/gui)
         target_compile_features(hcs_gui PRIVATE cxx_std_20)
@@ -102,6 +110,13 @@ if(HCS_BUILD_GUI)
             $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Wconversion;-Wshadow>
         )
         target_link_libraries(hcs_gui PRIVATE hcs_editor SDL3::SDL3)
+        if(SDL3_ttf_FOUND)
+            target_link_libraries(hcs_gui PRIVATE SDL3_ttf::SDL3_ttf)
+            target_compile_definitions(hcs_gui PRIVATE HCS_HAVE_SDL3_TTF=1)
+            message(STATUS "HCS GUI: SDL3_ttf font rendering enabled")
+        else()
+            message(WARNING "SDL3_ttf was not found: the GUI will use a pixel-aligned ASCII fallback. Install SDL3_ttf and system UI/code fonts for proportional, antialiased typography.")
+        endif()
     elseif(HCS_REQUIRE_SDL3)
         message(FATAL_ERROR "HCS_BUILD_GUI is enabled, but SDL3 was not found. Install SDL3 development files or set HCS_BUILD_GUI=OFF.")
     else()

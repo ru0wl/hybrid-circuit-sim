@@ -3,6 +3,7 @@
 #include "hcs/editor/runtime.hpp"
 #include "hcs/editor/simulation_controller.hpp"
 
+#include <array>
 #include <cstdlib>
 #include <cmath>
 #include <iostream>
@@ -156,6 +157,37 @@ void test_xor_truth_table_and_backends() {
     }
 }
 
+void test_backend_switching_on_live_runtime() {
+    using namespace hcs::editor;
+    CircuitEditor editor;
+    const auto source = editor.add_component(ComponentType::Input, {0, 0});
+    const auto inverter = editor.add_component(ComponentType::Not, {160, 0});
+    const auto sink = editor.add_component(ComponentType::Output, {340, 0});
+    (void)editor.connect(output_pin(editor, source), input_pin(editor, inverter));
+    (void)editor.connect(output_pin(editor, inverter), input_pin(editor, sink));
+
+    const std::array backends{
+        RuntimeBackend::InterpretedEvent, RuntimeBackend::InterpretedDense,
+        RuntimeBackend::OptimizedIRDense, RuntimeBackend::OptimizedIREvent,
+        RuntimeBackend::HybridIR, RuntimeBackend::CompiledNative,
+    };
+    CircuitRuntime runtime(backends.front());
+    runtime.synchronize(editor);
+    for (const auto backend : backends) {
+        runtime.set_backend(backend);
+        runtime.synchronize(editor);
+        (void)runtime.step();
+        require(runtime.backend() == backend, "Runtime did not retain the selected backend");
+        require(output_value(runtime, editor, sink), "Backend switch changed NOT output semantics");
+        (void)editor.set_input_value(source, true);
+        runtime.synchronize(editor);
+        (void)runtime.step();
+        require(!output_value(runtime, editor, sink), "Switched backend did not propagate updated input");
+        (void)editor.set_input_value(source, false);
+        runtime.synchronize(editor);
+    }
+}
+
 void test_dff_simultaneous_update_through_editor() {
     using namespace hcs::editor;
     CircuitEditor editor;
@@ -290,6 +322,7 @@ int main() {
         test_and_truth_table();
         test_or_truth_table();
         test_xor_truth_table_and_backends();
+        test_backend_switching_on_live_runtime();
         test_dff_simultaneous_update_through_editor();
         test_structural_resynchronize();
         test_component_removal_cleans_wires();

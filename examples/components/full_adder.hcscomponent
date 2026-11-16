@@ -1,0 +1,30 @@
+HCSC 1
+id arithmetic.full-adder
+name "Full Adder"
+description "Adds A, B and Carry In using two Half Adders and an OR gate. Requires arithmetic.half-adder."
+category "Arithmetic"
+size width=220 height=148
+port input a "A" terminal=0
+port input b "B" terminal=1
+port input cin "Carry In" terminal=2
+port output sum "Sum" terminal=6
+port output carry "Carry Out" terminal=7
+implementation
+HCS 1
+circuit "Full Adder implementation"
+component 0 Input x=-220 y=16 value=0
+component 1 Input x=-220 y=72 value=0
+component 2 Input x=-220 y=128 value=0
+component 3 CUSTOM definition=arithmetic.half-adder x=20 y=8
+component 4 CUSTOM definition=arithmetic.half-adder x=300 y=8
+component 5 OR x=580 y=96
+component 6 Output x=820 y=24
+component 7 Output x=820 y=112
+wire 0.out -> 3.a
+wire 1.out -> 3.b
+wire 3.sum -> 4.a
+wire 2.out -> 4.b
+wire 3.carry -> 5.in0
+wire 4.carry -> 5.in1
+wire 4.sum -> 6.in
+wire 5.out -> 7.in

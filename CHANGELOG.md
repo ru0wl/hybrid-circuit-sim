@@ -1,3 +1,30 @@
+# Changelog
+
+## Unreleased
+
+- Reduced the default UI/code TTF point sizes slightly and added font-metric measurement so toolbar labels, component names and pin labels use consistent horizontal/vertical alignment instead of fixed character-width estimates.
+- Centered toolbar button text within each button and corrected custom output-port labels to align to the outside edge of their pins.
+- Moved hardware/CPU/SIMD/worker information out of the second toolbar row into a dedicated second status-bar line; increased the status area height to prevent text from overlapping controls.
+
+- Render UI/code text at its effective font size using cached SDL3_ttf font instances, avoiding blurry upscaled 14-point font textures. The ASCII fallback now snaps glyph pixels to the integer grid.
+- Show the active simulation backend in the backend button, report switch success/failure in the GUI, and add `B` as a backend-cycle shortcut.
+- Support left-button drag panning on empty canvas space while preserving component dragging, wire creation, input toggles and middle-button panning.
+
+## Phase 5.4 — custom components, library and typography
+
+- Added stable-ID custom component definitions stored as versioned `.hcscomponent` (`HCSC 1`) text files; existing `.hcs` v1 documents can reference definitions through `CUSTOM definition=<id>` without duplicating implementation graphs.
+- Added definition metadata, stable external port IDs, internal terminal mapping, deterministic serialization, strict shape validation, library-directory dependency resolution and missing-definition diagnostics.
+- Added UI-independent APIs to create empty definitions, add/rename/remove external ports, and migrate all instances by stable port ID while rejecting removal or direction changes of connected ports.
+- Added transactional selection extraction with internal-wire copying, generated boundary input/output ports, external reconnection and rollback on invalid mappings.
+- Added a GUI workflow for empty definition creation, definition editing, external port add/remove/rename, metadata editing, nested component placement and transactional save/cancel; compatible instance ports retain their IDs and wires, while incompatible connected-port changes are rejected.
+- Added a sorted component catalogue for built-ins and custom definitions; the SDL frontend contains search/category filtering, named pin previews, placement, selection extraction and definition editing.
+- Made component-library directory loading transactional so malformed or unresolved dependencies do not publish a partial library; extended `hcs_circuit` to resolve custom references through the default or an explicit `--library-dir` library.
+- Added hierarchy validation (recursive dependency rejection, nesting/dependency/expansion bounds) and flattening into the existing `CircuitEditor`/`CircuitBuilder`/`hcs::Simulator` path. Every instance gets independent built-in/DFF state; no separate evaluation engine or backend was introduced.
+- Added Half Adder, nested Full Adder and DFF Cell example definitions and runtime/persistence/selection/library/hierarchy tests across the six existing backends.
+- Added a centralized UI/code `FontManager`, optional SDL3_ttf integration, one-time font loading/cleanup, display-scale handling and a fallback renderer. Fonts are not bundled; the final bitmap fallback is ASCII-only.
+- A dedicated arbitrary-signal port-mapping wizard and self-contained dependency bundle export remain deferred. Real SDL3/SDL3_ttf GUI interaction and font rendering were not verified on this host.
+- Updated GUI letter-key comparisons to SDL3 canonical uppercase constants (`SDLK_A`–`SDLK_Z`), removing deprecated SDL3 lowercase keycode aliases that fail when SDL3 old-name compatibility warnings are treated as errors.
+
 ## Phase 5.3 — circuit persistence and text editing
 
 - Added the documented, versioned `.hcs` v1 human-readable circuit format with stable component IDs, symbolic pin names, component positions, Input values, DFF initial states and wire endpoints.
@@ -8,8 +35,6 @@
 - Added GUI New/Open/Save/Save As, dirty-state title/status indicators, unsaved-change and overwrite confirmation, a path-entry fallback, and an editable text view with Apply/Reload/Graph actions and clipboard/key editing.
 - Added persistence round-trip, deterministic-output, malformed-file, atomic-replacement, text-edit and loaded-runtime/DFF tests.
 - Kept the serialized schema at the editor/model boundary; custom components, subcircuits, simulator memory and runtime signal IDs remain outside the format.
-
-# Changelog
 
 ## Unreleased — compiler foundation
 

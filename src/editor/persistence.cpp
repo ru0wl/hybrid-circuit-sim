@@ -1,4 +1,5 @@
 #include "hcs/editor/persistence.hpp"
+#include "hcs/editor/custom_components.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -32,6 +33,7 @@ struct ComponentRecord {
     Vec2 position{};
     bool input_value{false};
     bool dff_initial_state{false};
+    std::string definition_id;
     std::size_t line{0};
 };
 
@@ -125,6 +127,7 @@ bool parse_component_type(std::string_view text, ComponentType& type) {
     else if (text == "NOT") type = ComponentType::Not;
     else if (text == "XOR") type = ComponentType::Xor;
     else if (text == "DFF") type = ComponentType::DFlipFlop;
+    else if (text == "CUSTOM") type = ComponentType::Custom;
     else return false;
     return true;
 }
@@ -138,11 +141,20 @@ std::string_view component_type_text(ComponentType type) {
         case ComponentType::Not: return "NOT";
         case ComponentType::Xor: return "XOR";
         case ComponentType::DFlipFlop: return "DFF";
+        case ComponentType::Custom: return "CUSTOM";
     }
     return "UNKNOWN";
 }
 
-bool endpoint_pin_exists(const ComponentRecord& component, std::string_view pin, bool source) {
+bool endpoint_pin_exists(const ComponentRecord& component, std::string_view pin, bool source, const ComponentLibrary* library) {
+    if (component.type == ComponentType::Custom) {
+        if (!library) return false;
+        const auto* definition = library->find(component.definition_id);
+        if (!definition) return false;
+        return std::any_of(definition->ports.begin(), definition->ports.end(), [&](const CustomPort& port) {
+            return port.id == pin && port.direction == (source ? PinDirection::Output : PinDirection::Input);
+        });
+    }
     if (source) {
         if (component.type == ComponentType::Output) return false;
         return pin == (component.type == ComponentType::DFlipFlop ? "q" : "out");
@@ -155,11 +167,13 @@ bool endpoint_pin_exists(const ComponentRecord& component, std::string_view pin,
         case ComponentType::Xor: return pin == "in0" || pin == "in1";
         case ComponentType::Not: return pin == "in";
         case ComponentType::DFlipFlop: return pin == "d" || pin == "clk";
+        case ComponentType::Custom: return false;
     }
     return false;
 }
 
 std::string pin_name(const Component& component, const Pin& pin) {
+    if (!pin.key.empty()) return pin.key;
     if (pin.direction == PinDirection::Output) {
         return component.type == ComponentType::DFlipFlop ? "q" : "out";
     }
@@ -173,6 +187,7 @@ std::string pin_name(const Component& component, const Pin& pin) {
         case ComponentType::Xor:
             return !component.inputs.empty() && component.inputs.front().id == pin.id ? "in0" : "in1";
         case ComponentType::Input: break;
+        case ComponentType::Custom: return pin.key;
     }
     return "unknown";
 }
@@ -221,7 +236,7 @@ bool fail(PersistenceError& error, std::size_t line, std::string message) {
 
 bool parse_document(std::string_view text, std::string& name,
                     std::vector<ComponentRecord>& components, std::vector<WireRecord>& wires,
-                    PersistenceError& error) {
+                    const ComponentLibrary* library, PersistenceError& error) {
     error = {};
     components.clear();
     wires.clear();
@@ -290,7 +305,7 @@ bool parse_document(std::string_view text, std::string& name,
             }
             for (const auto& [key, value] : fields) {
                 (void)value;
-                if (key != "x" && key != "y" && key != "value" && key != "initial")
+                if (key != "x" && key != "y" && key != "value" && key != "initial" && key != "definition")
                     return fail(error, line_number, "unknown component field '" + key + "'");
             }
             const auto x = fields.find("x");
@@ -312,6 +327,17 @@ bool parse_document(std::string_view text, std::string& name,
                     return fail(error, line_number, "field 'initial' is only valid for DFF components");
                 if (!parse_bit(initial->second, component.dff_initial_state))
                     return fail(error, line_number, "component " + std::to_string(component.id) + " has invalid initial state (expected 0 or 1)");
+            }
+            if (const auto definition = fields.find("definition"); definition != fields.end()) {
+                if (component.type != ComponentType::Custom)
+                    return fail(error, line_number, "field 'definition' is only valid for CUSTOM components");
+                if (definition->second.empty()) return fail(error, line_number, "custom component definition ID cannot be empty");
+                component.definition_id = definition->second;
+            }
+            if (component.type == ComponentType::Custom) {
+                if (component.definition_id.empty()) return fail(error, line_number, "CUSTOM component is missing definition=<id>");
+                if (!library) return fail(error, line_number, "CUSTOM component requires an available component library");
+                if (!library->find(component.definition_id)) return fail(error, line_number, "missing custom component definition '" + component.definition_id + "'");
             }
             component_indices.emplace(component.id, components.size());
             components.push_back(component);
@@ -348,9 +374,9 @@ bool parse_document(std::string_view text, std::string& name,
             return fail(error, wire.line, "wire references missing destination component " + std::to_string(wire.destination.component));
         const auto& source_component = components[source->second];
         const auto& destination_component = components[destination->second];
-        if (!endpoint_pin_exists(source_component, wire.source.pin, true))
+        if (!endpoint_pin_exists(source_component, wire.source.pin, true, library))
             return fail(error, wire.line, "'" + std::to_string(wire.source.component) + "." + wire.source.pin + "' is not an output pin");
-        if (!endpoint_pin_exists(destination_component, wire.destination.pin, false))
+        if (!endpoint_pin_exists(destination_component, wire.destination.pin, false, library))
             return fail(error, wire.line, "'" + std::to_string(wire.destination.component) + "." + wire.destination.pin + "' is not an input pin");
         if (!driven_inputs.emplace(wire.destination.component, wire.destination.pin).second)
             return fail(error, wire.line, "multiple drivers target input '" + std::to_string(wire.destination.component) + "." + wire.destination.pin + "'");
@@ -365,8 +391,8 @@ std::string PersistenceError::describe() const {
     return "line " + std::to_string(line) + ": " + message;
 }
 
-bool serialize_circuit(const CircuitEditor& circuit, std::string_view circuit_name,
-                       std::string& text, PersistenceError& error) {
+static bool serialize_circuit_impl(const CircuitEditor& circuit, std::string_view circuit_name,
+                                   const ComponentLibrary* library, std::string& text, PersistenceError& error) {
     error = {};
     if (circuit_name.size() > kMaximumNameBytes)
         return fail(error, 0, "circuit name exceeds 256 bytes");
@@ -376,6 +402,9 @@ bool serialize_circuit(const CircuitEditor& circuit, std::string_view circuit_na
     std::vector<const Component*> components;
     components.reserve(circuit.components().size());
     for (const auto& component : circuit.components()) {
+        if (component.type == ComponentType::Custom &&
+            (!library || !library->find(component.definition_id)))
+            return fail(error, 0, "missing custom component definition '" + component.definition_id + "'");
         if (!std::isfinite(component.position.x) || !std::isfinite(component.position.y) ||
             std::abs(component.position.x) > kMaximumPosition || std::abs(component.position.y) > kMaximumPosition)
             return fail(error, 0, "component " + std::to_string(component.id) + " has an invalid position");
@@ -409,6 +438,7 @@ bool serialize_circuit(const CircuitEditor& circuit, std::string_view circuit_na
                << " y=" << float_text(component->position.y);
         if (component->type == ComponentType::Input) output << " value=" << (component->input_value ? 1 : 0);
         if (component->type == ComponentType::DFlipFlop) output << " initial=" << (component->dff_initial_state ? 1 : 0);
+        if (component->type == ComponentType::Custom) output << " definition=" << component->definition_id;
         output << '\n';
     }
     if (!wires.empty()) {
@@ -419,21 +449,33 @@ bool serialize_circuit(const CircuitEditor& circuit, std::string_view circuit_na
     return true;
 }
 
-bool parse_circuit(std::string_view text, CircuitEditor& destination,
-                   std::string& circuit_name, PersistenceError& error) {
+static bool parse_circuit_impl(std::string_view text, CircuitEditor& destination,
+                               std::string& circuit_name, const ComponentLibrary* library,
+                               PersistenceError& error) {
     if (text.size() > kMaximumFileBytes) return fail(error, 0, "circuit file exceeds the 16 MiB size limit");
 
     std::string parsed_name;
     std::vector<ComponentRecord> components;
     std::vector<WireRecord> wires;
-    if (!parse_document(text, parsed_name, components, wires, error)) return false;
+    if (!parse_document(text, parsed_name, components, wires, library, error)) return false;
 
     std::sort(components.begin(), components.end(), [](const ComponentRecord& a, const ComponentRecord& b) { return a.id < b.id; });
     CircuitEditor candidate;
     for (const auto& component : components) {
-        if (!candidate.add_component_with_id(component.id, component.type, component.position,
-                                             component.input_value, component.dff_initial_state))
-            return fail(error, component.line, "could not construct component " + std::to_string(component.id));
+        bool added = false;
+        if (component.type == ComponentType::Custom && library) {
+            const auto* definition = library->find(component.definition_id);
+            if (!definition) return fail(error, component.line, "missing custom component definition '" + component.definition_id + "'");
+            std::vector<CustomPortLayout> ports;
+            ports.reserve(definition->ports.size());
+            for (const auto& port : definition->ports) ports.push_back({port.id, port.name, port.direction});
+            added = candidate.add_custom_component_with_id(component.id, component.definition_id,
+                                                            component.position, ports, definition->size);
+        } else {
+            added = candidate.add_component_with_id(component.id, component.type, component.position,
+                                                     component.input_value, component.dff_initial_state);
+        }
+        if (!added) return fail(error, component.line, "could not construct component " + std::to_string(component.id));
     }
     for (const auto& wire : wires) {
         const auto* source_component = candidate.find_component(wire.source.component);
@@ -457,6 +499,26 @@ bool parse_circuit(std::string_view text, CircuitEditor& destination,
     circuit_name = std::move(parsed_name);
     error = {};
     return true;
+}
+
+bool serialize_circuit(const CircuitEditor& circuit, std::string_view circuit_name,
+                       std::string& text, PersistenceError& error) {
+    return serialize_circuit_impl(circuit, circuit_name, nullptr, text, error);
+}
+
+bool serialize_circuit(const CircuitEditor& circuit, std::string_view circuit_name,
+                       const ComponentLibrary& library, std::string& text, PersistenceError& error) {
+    return serialize_circuit_impl(circuit, circuit_name, &library, text, error);
+}
+
+bool parse_circuit(std::string_view text, CircuitEditor& destination,
+                   std::string& circuit_name, PersistenceError& error) {
+    return parse_circuit_impl(text, destination, circuit_name, nullptr, error);
+}
+
+bool parse_circuit(std::string_view text, CircuitEditor& destination,
+                   std::string& circuit_name, const ComponentLibrary& library, PersistenceError& error) {
+    return parse_circuit_impl(text, destination, circuit_name, &library, error);
 }
 
 bool save_circuit_file(const std::filesystem::path& path, const CircuitEditor& circuit,
@@ -490,6 +552,28 @@ bool save_circuit_file(const std::filesystem::path& path, const CircuitEditor& c
     return true;
 }
 
+bool save_circuit_file(const std::filesystem::path& path, const CircuitEditor& circuit,
+                       std::string_view circuit_name, const ComponentLibrary& library,
+                       PersistenceError& error) {
+    if (path.empty()) return fail(error, 0, "output path is empty");
+    std::string text;
+    if (!serialize_circuit(circuit, circuit_name, library, text, error)) return false;
+    auto temporary = path;
+    temporary += ".tmp";
+    {
+        std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+        if (!file) return fail(error, 0, "cannot open temporary file '" + temporary.string() + "' for writing");
+        file.write(text.data(), static_cast<std::streamsize>(text.size()));
+        file.flush();
+        if (!file) { file.close(); std::error_code ignored; std::filesystem::remove(temporary, ignored); return fail(error, 0, "failed while writing temporary circuit file"); }
+    }
+    std::error_code ec;
+    std::filesystem::rename(temporary, path, ec);
+    if (ec) { std::error_code ignored; std::filesystem::remove(temporary, ignored); return fail(error, 0, "cannot atomically replace circuit file: " + ec.message()); }
+    error = {};
+    return true;
+}
+
 bool load_circuit_file(const std::filesystem::path& path, CircuitEditor& destination,
                        std::string& circuit_name, PersistenceError& error) {
     std::ifstream file(path, std::ios::binary);
@@ -504,6 +588,22 @@ bool load_circuit_file(const std::filesystem::path& path, CircuitEditor& destina
     if (!text.empty()) file.read(text.data(), static_cast<std::streamsize>(text.size()));
     if (!file && !file.eof()) return fail(error, 0, "failed while reading circuit file");
     return parse_circuit(text, destination, circuit_name, error);
+}
+
+bool load_circuit_file(const std::filesystem::path& path, CircuitEditor& destination,
+                       std::string& circuit_name, const ComponentLibrary& library,
+                       PersistenceError& error) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) return fail(error, 0, "cannot open '" + path.string() + "' for reading");
+    file.seekg(0, std::ios::end);
+    const auto length = file.tellg();
+    if (length < 0 || static_cast<std::uintmax_t>(length) > kMaximumFileBytes)
+        return fail(error, 0, "invalid or oversized circuit file");
+    file.seekg(0, std::ios::beg);
+    std::string text(static_cast<std::size_t>(length), '\0');
+    if (!text.empty()) file.read(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!file && !file.eof()) return fail(error, 0, "failed while reading circuit file");
+    return parse_circuit(text, destination, circuit_name, library, error);
 }
 
 } // namespace hcs::editor

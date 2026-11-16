@@ -1,0 +1,25 @@
+HCSC 1
+id arithmetic.half-adder
+name "Half Adder"
+description "Adds two one-bit values and exposes Sum and Carry."
+category "Arithmetic"
+size width=180 height=112
+port input a "A" terminal=0
+port input b "B" terminal=1
+port output sum "Sum" terminal=4
+port output carry "Carry" terminal=5
+implementation
+HCS 1
+circuit "Half Adder implementation"
+component 0 Input x=-180 y=24 value=0
+component 1 Input x=-180 y=76 value=0
+component 2 XOR x=40 y=24
+component 3 AND x=40 y=96
+component 4 Output x=280 y=24
+component 5 Output x=280 y=96
+wire 0.out -> 2.in0
+wire 1.out -> 2.in1
+wire 0.out -> 3.in0
+wire 1.out -> 3.in1
+wire 2.out -> 4.in
+wire 3.out -> 5.in

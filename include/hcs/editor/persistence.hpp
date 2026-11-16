@@ -9,6 +9,8 @@
 
 namespace hcs::editor {
 
+class ComponentLibrary;
+
 inline constexpr unsigned kCircuitFormatVersion = 1;
 inline constexpr std::string_view kCircuitFileExtension = ".hcs";
 
@@ -22,17 +24,29 @@ struct PersistenceError {
 // Convert an editor document to the canonical, deterministic HCS text format.
 [[nodiscard]] bool serialize_circuit(const CircuitEditor& circuit, std::string_view circuit_name,
                                      std::string& text, PersistenceError& error);
+[[nodiscard]] bool serialize_circuit(const CircuitEditor& circuit, std::string_view circuit_name,
+                                     const ComponentLibrary& library, std::string& text,
+                                     PersistenceError& error);
 
 // Parse and validate into a temporary model. The destination is replaced only after
 // the complete document has passed parsing, reference validation and model creation.
 [[nodiscard]] bool parse_circuit(std::string_view text, CircuitEditor& destination,
                                  std::string& circuit_name, PersistenceError& error);
+[[nodiscard]] bool parse_circuit(std::string_view text, CircuitEditor& destination,
+                                 std::string& circuit_name, const ComponentLibrary& library,
+                                 PersistenceError& error);
 
 [[nodiscard]] bool save_circuit_file(const std::filesystem::path& path,
                                      const CircuitEditor& circuit, std::string_view circuit_name,
                                      PersistenceError& error);
+[[nodiscard]] bool save_circuit_file(const std::filesystem::path& path,
+                                     const CircuitEditor& circuit, std::string_view circuit_name,
+                                     const ComponentLibrary& library, PersistenceError& error);
 [[nodiscard]] bool load_circuit_file(const std::filesystem::path& path,
                                      CircuitEditor& destination, std::string& circuit_name,
                                      PersistenceError& error);
+[[nodiscard]] bool load_circuit_file(const std::filesystem::path& path,
+                                     CircuitEditor& destination, std::string& circuit_name,
+                                     const ComponentLibrary& library, PersistenceError& error);
 
 } // namespace hcs::editor

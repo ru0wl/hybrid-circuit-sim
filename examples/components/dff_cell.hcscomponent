@@ -1,0 +1,19 @@
+HCSC 1
+id sequential.dff-cell
+name "DFF Cell"
+description "One-bit positive-edge register implemented with the built-in D Flip-Flop."
+category "Sequential"
+size width=180 height=112
+port input d "D" terminal=0
+port input clk "Clock" terminal=1
+port output q "Q" terminal=3
+implementation
+HCS 1
+circuit "DFF Cell implementation"
+component 0 Input x=-180 y=24 value=0
+component 1 Input x=-180 y=84 value=0
+component 2 DFF x=40 y=32 initial=0
+component 3 Output x=280 y=52
+wire 0.out -> 2.d
+wire 1.out -> 2.clk
+wire 2.q -> 3.in

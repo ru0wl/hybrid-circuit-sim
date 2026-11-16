@@ -11,6 +11,8 @@
 
 namespace hcs::editor {
 
+class ComponentLibrary;
+
 enum class RuntimeBackend : std::uint8_t {
     InterpretedEvent,
     InterpretedDense,
@@ -28,7 +30,9 @@ public:
     // Rebuilds the immutable HCS circuit only when the editor's structural revision
     // or selected backend changes. Geometry, selection and input values do not rebuild it.
     void synchronize(CircuitEditor& editor);
+    void synchronize(CircuitEditor& editor, const ComponentLibrary& library);
     void set_backend(RuntimeBackend backend) noexcept;
+    void invalidate() noexcept;
     [[nodiscard]] RuntimeBackend backend() const noexcept { return backend_; }
     void set_acceleration(const AccelerationConfig& config) noexcept;
     [[nodiscard]] const AccelerationConfig& acceleration() const noexcept { return acceleration_; }
@@ -38,6 +42,7 @@ public:
 
     [[nodiscard]] StepResult step();
     void reset(CircuitEditor& editor);
+    void reset(CircuitEditor& editor, const ComponentLibrary& library);
 
     [[nodiscard]] SignalState signal_for_pin(PinId pin) const noexcept;
     [[nodiscard]] bool binary_signal_for_pin(PinId pin) const noexcept;
@@ -64,6 +69,7 @@ private:
     std::unique_ptr<Simulator> simulator_;
     std::uint64_t synchronized_revision_{0};
     std::uint64_t synchronized_input_revision_{0};
+    std::uint64_t synchronized_library_revision_{0};
     std::unordered_map<PinId, SignalId> pin_signals_;
     std::vector<InputBinding> input_bindings_;
     StepResult last_result_{};

@@ -7,6 +7,8 @@
 
 namespace hcs::editor {
 
+class ComponentLibrary;
+
 enum class SimulationRate : std::uint8_t { Hz1, Hz10, Hz60, Hz1000, Unlimited };
 
 class SimulationController final {
@@ -19,6 +21,7 @@ public:
     void resume() noexcept;
     void toggle_running() noexcept;
     void reset(CircuitEditor& editor);
+    void reset(CircuitEditor& editor, const ComponentLibrary& library);
     void notify_input_changed() noexcept;
 
     void set_rate(SimulationRate rate) noexcept;

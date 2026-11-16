@@ -1,4 +1,5 @@
 #include "hcs/editor/simulation_controller.hpp"
+#include "hcs/editor/custom_components.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -60,6 +61,15 @@ void SimulationController::reset(CircuitEditor& editor) {
     total_steps_ = 0;
     pending_input_settle_ = false;
     runtime_.reset(editor);
+    pending_input_settle_ = true;
+}
+
+void SimulationController::reset(CircuitEditor& editor, const ComponentLibrary& library) {
+    running_ = false;
+    accumulator_ = 0.0;
+    total_steps_ = 0;
+    pending_input_settle_ = false;
+    runtime_.reset(editor, library);
     pending_input_settle_ = true;
 }
 

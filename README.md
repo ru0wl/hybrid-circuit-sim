@@ -22,6 +22,7 @@ A small, buildable C++20 foundation for experimenting with a hybrid interpreted/
 - Phase 5 editor foundation: world-space component/pin/wire model, camera transforms, HCS runtime integration and simulation scheduling.
 - Optional SDL3 graphical circuit editor (`hcs_gui`) with placement, dragging, wiring, input toggles, output display, backend selection, run/pause and manual stepping.
 - Phase 5.3 `.hcs` version-1 human-readable circuit persistence, deterministic serialization, atomic model/file loading, GUI New/Open/Save/Save As, a multiline text-edit/apply view, and the headless `hcs_circuit` validator/formatter.
+- Phase 5.4 UI-independent custom-component definitions (`.hcscomponent`), library/dependency resolution, hierarchical flattening into the existing runtime, stable external ports, selection extraction, and centralized UI/code font roles.
 - Phase 5.2 experimental AVX2 batches for eligible wide acyclic HybridIR regions, runtime CPU feature detection, and an opt-in persistent worker pool for independent acyclic HybridIR regions.
 - Hardware capability reporting (`hcs_demo --hardware-info`) and controlled CPU acceleration A/B benchmark (`hcs_hardware_bench`).
 Interpreted execution never invokes native compilation. `Backend::Compiled` remains an explicit choice. `Backend::OptimizedIR` is also interpreted execution; it does not create a shared library.
@@ -30,7 +31,7 @@ Interpreted execution never invokes native compilation. `Backend::Compiled` rema
 
 The current API exposes every signal through `Simulator::signal(id)`. Consequently, ordinary circuits mark every signal observable and dead-logic elimination keeps every driver. The DCE pass itself is implemented and can remove logic when an IR producer supplies a narrower `observable_signals` set. Operation fusion is disabled by default and reports why it was skipped; discarding intermediate writes would change current inspection behavior. CSE preserves duplicate output signals by turning duplicate computations into forwarding operations.
 
-The simulation core still supports one-bit signals and gates with at most two inputs. Multi-input gates, buses, delays, explicit latches, X/Z values and incremental compilation are not implemented. Phase 5.2 adds opt-in AVX2 and multicore execution only to eligible acyclic `HybridIR` work; other backends remain unchanged. AVX2 Auto currently selects scalar because benchmarks did not show a consistent win. Multicore is off by default and may be slower on small or moderately sized workloads. Vulkan/GPU compute, AVX-512, ARM NEON, custom/user-defined components and hierarchical subcircuits are not implemented. Phase 5 adds a separate editor layer and optional SDL3 frontend; it does not replace or modify the simulation model. Optimized IR supports dense fixed-point and direct event-driven execution; the separately selectable experimental HybridIR backend adds dirty-region scheduling but is not a default or automatic choice. The original interpreted backends remain available unchanged.
+The simulation core still supports one-bit signals and gates with at most two inputs. Multi-input gates, buses, delays, explicit latches, X/Z values and incremental compilation are not implemented. Phase 5.2 adds opt-in AVX2 and multicore execution only to eligible acyclic `HybridIR` work; other backends remain unchanged. AVX2 Auto currently selects scalar because benchmarks did not show a consistent win. Multicore is off by default and may be slower on small or moderately sized workloads. Vulkan/GPU compute, AVX-512 and ARM NEON are not implemented. Custom-component definitions, GUI definition authoring/editing and hierarchical flattening are implemented in the editor/model layer; self-contained dependency bundle export is not implemented. Phase 5 adds a separate editor layer and optional SDL3 frontend; it does not replace or modify the simulation model. Optimized IR supports dense fixed-point and direct event-driven execution; the separately selectable experimental HybridIR backend adds dirty-region scheduling but is not a default or automatic choice. The original interpreted backends remain available unchanged.
 
 The cache uses a non-cryptographic FNV-1a fingerprint/checksum to detect accidental mismatches and corruption. It is intended for a user-owned local cache directory, not for loading native modules from untrusted locations.
 
@@ -87,7 +88,7 @@ cmake --build build --parallel
 ./build/hcs_gui
 ```
 
-CMake creates `hcs_gui` when it finds SDL3 3.2+ and its CMake target (`SDL3::SDL3`). If SDL3 is absent and `HCS_REQUIRE_SDL3=OFF`, it warns and continues building the core/editor model/tests. Set `-DHCS_BUILD_GUI=OFF` for an explicitly headless build. No SDL_ttf or image dependency is required; labels use a small procedural bitmap font.
+CMake creates `hcs_gui` when it finds SDL3 3.2+ and its CMake target (`SDL3::SDL3`). If SDL3 is absent and `HCS_REQUIRE_SDL3=OFF`, it warns and continues building the core/editor model/tests. Set `-DHCS_BUILD_GUI=OFF` for an explicitly headless build. SDL3_ttf is optional. When available, the centralized FontManager uses installed system fonts for proportional UI text and monospaced code text; without it, the editor falls back to an ASCII-only bitmap font. No font binaries are bundled. See the custom-component documentation for font candidates, licensing and Cyrillic fallback details.
 
 The editor starts with two working examples: `Input -> NOT -> Output` and `A/B -> XOR -> Output`. Pick a component from the top palette and click the canvas to place it. Drag from an output pin to an input pin to wire components. Click an Input component to toggle it, drag component bodies to move them, use middle mouse to pan and the wheel to zoom. Delete removes the selected component/wire, Escape cancels an active placement/wire, and Space toggles run/pause.
 
@@ -105,7 +106,21 @@ The format and CLI are documented in [`docs/CIRCUIT_FORMAT.md`](docs/CIRCUIT_FOR
 ./build/hcs_circuit validate examples/xor.hcs
 ./build/hcs_circuit print examples/xor.hcs
 ./build/hcs_circuit format examples/xor.hcs formatted.hcs
+
+# Validate a circuit that uses definitions from a specific library directory.
+./build/hcs_circuit validate examples/half_adder_instance.hcs \
+  --library-dir examples/components
 ```
+
+## Custom components (Phase 5.4)
+
+Custom definitions use `.hcscomponent` (`HCSC 1`) and can be composed from existing built-in components and nested custom definitions. Root `.hcs` files remain version 1 and refer to definitions by stable ID using `CUSTOM definition=<id>`; they do not duplicate implementation graphs. The default library directory is `$XDG_DATA_HOME/hcs/components` or `~/.local/share/hcs/components`. Copy referenced definition files alongside a circuit when moving it to another machine.
+
+The runtime validates and flattens custom hierarchies into ordinary editor components before using the existing `CircuitBuilder` and `hcs::Simulator`. It does not add a separate custom-component evaluator or alter backend semantics. Default safety limits are 16 nested levels, 100,000 expanded built-in components and 4,096 dependency contexts.
+
+The GUI supports multi-selection extraction through **MAKE CUSTOM**, empty definition creation through **NEW CUSTOM**, a separate definition-edit mode, add/remove/rename external ports, metadata editing, nested component placement from the library, and transactional **SAVE DEF** / **CANCEL EDIT**. The library panel supports search, category filtering and named pin previews. Selection-derived ports are generated from selected terminal components and cut wires; a dedicated arbitrary-signal port-mapping wizard and self-contained dependency bundle export are not included. See [`docs/CUSTOM_COMPONENTS.md`](docs/CUSTOM_COMPONENTS.md), [`docs/GUI_ARCHITECTURE.md`](docs/GUI_ARCHITECTURE.md) and the [Phase 5.4 implementation report](docs/PHASE5_4_REPORT.md).
+
+Example definitions are in `examples/components/`: Half Adder, Full Adder (requires Half Adder), and DFF Cell. `examples/half_adder_instance.hcs` demonstrates a root circuit that references the Half Adder; use `hcs_circuit ... --library-dir examples/components` to validate, print or format it.
 
 ## Hardware acceleration (Phase 5.2)
 

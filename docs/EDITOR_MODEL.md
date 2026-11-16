@@ -21,6 +21,9 @@ A `Wire` is an output-pin ID and an input-pin ID. The editor rejects direction m
 | NOT | 1 | 1 |
 | XOR | 2 | 1 |
 | D Flip-Flop | D, CLK | Q |
+| Custom | Definition-declared stable port IDs | Definition-declared stable port IDs |
+
+A `Custom` component instance stores a definition ID and a generated per-instance pin layout. Its internal implementation is not copied into the root `.hcs` document. `ComponentLibrary` owns each definition once. During runtime synchronization, the hierarchy is validated and expanded into ordinary built-in editor components before the existing `CircuitBuilder` path. Every instance is expanded separately, including internal DFFs, so sequential state is isolated per instance.
 
 DFF clock is a normal one-bit input pin. An Input component can drive it. Positive-edge triggering and simultaneous DFF updates are provided by the existing HCS simulator.
 
@@ -34,7 +37,7 @@ DFF clock is a normal one-bit input pin. An Input component can drive it. Positi
 
 The `.hcs` file stores stable numeric component IDs, but it does not serialize `PinId`, `WireId` or `SignalId`. Connections use component ID plus a symbolic port name (`out`, `in0`, `d`, `clk`, etc.). Pin IDs are regenerated from the fixed component pin layout when parsing. See [`CIRCUIT_FORMAT.md`](CIRCUIT_FORMAT.md) for the complete version-1 schema and validation rules.
 
-The editor currently supports one selected component or one selected wire. Deleting a component also removes attached wires.
+The editor supports component multi-selection for custom-component extraction, as well as single wire selection. Deleting a component also removes attached wires.
 
 ## Incomplete circuits
 

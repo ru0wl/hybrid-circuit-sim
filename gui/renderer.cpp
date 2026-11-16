@@ -20,34 +20,6 @@ constexpr SDL_Color kLogicZero{109, 145, 174, 255};
 constexpr SDL_Color kLogicOne{255, 190, 82, 255};
 constexpr SDL_Color kError{235, 92, 102, 255};
 
-std::array<std::uint8_t, 7> glyph(char c) noexcept {
-    switch (c) {
-        case 'A': return {14,17,17,31,17,17,17}; case 'B': return {30,17,17,30,17,17,30};
-        case 'C': return {14,17,16,16,16,17,14}; case 'D': return {30,17,17,17,17,17,30};
-        case 'E': return {31,16,16,30,16,16,31}; case 'F': return {31,16,16,30,16,16,16};
-        case 'G': return {14,17,16,23,17,17,15}; case 'H': return {17,17,17,31,17,17,17};
-        case 'I': return {14,4,4,4,4,4,14}; case 'J': return {7,2,2,2,18,18,12};
-        case 'K': return {17,18,20,24,20,18,17}; case 'L': return {16,16,16,16,16,16,31};
-        case 'M': return {17,27,21,21,17,17,17}; case 'N': return {17,25,21,19,17,17,17};
-        case 'O': return {14,17,17,17,17,17,14}; case 'P': return {30,17,17,30,16,16,16};
-        case 'Q': return {14,17,17,17,21,18,13}; case 'R': return {30,17,17,30,20,18,17};
-        case 'S': return {15,16,16,14,1,1,30}; case 'T': return {31,4,4,4,4,4,4};
-        case 'U': return {17,17,17,17,17,17,14}; case 'V': return {17,17,17,17,17,10,4};
-        case 'W': return {17,17,17,21,21,21,10}; case 'X': return {17,17,10,4,10,17,17};
-        case 'Y': return {17,17,10,4,4,4,4}; case 'Z': return {31,1,2,4,8,16,31};
-        case '0': return {14,17,19,21,25,17,14}; case '1': return {4,12,4,4,4,4,14};
-        case '2': return {14,17,1,2,4,8,31}; case '3': return {30,1,1,14,1,1,30};
-        case '4': return {2,6,10,18,31,2,2}; case '5': return {31,16,16,30,1,1,30};
-        case '6': return {14,16,16,30,17,17,14}; case '7': return {31,1,2,4,8,8,8};
-        case '8': return {14,17,17,14,17,17,14}; case '9': return {14,17,17,15,1,1,14};
-        case '-': return {0,0,0,31,0,0,0}; case '+': return {0,4,4,31,4,4,0};
-        case ':': return {0,4,4,0,4,4,0}; case '.': return {0,0,0,0,0,12,12};
-        case '/': return {1,2,2,4,8,8,16}; case '(': return {2,4,8,8,8,4,2};
-        case ')': return {8,4,2,2,2,4,8}; case '=': return {0,31,0,31,0,0,0};
-        case '_': return {0,0,0,0,0,0,31}; case ' ': return {0,0,0,0,0,0,0};
-        default: return {31,17,21,21,21,17,31};
-    }
-}
 
 SDL_Color state_color(editor::SignalState state) noexcept {
     switch (state) {
@@ -105,22 +77,13 @@ void CircuitRenderer::line(SDL_Renderer* renderer, editor::Vec2 a, editor::Vec2 
     (void)SDL_RenderLine(renderer, a.x, a.y, b.x, b.y);
 }
 
-void CircuitRenderer::text(SDL_Renderer* renderer, float x, float y, const char* value, float scale, SDL_Color color) {
-    if (!value || scale <= 0.0F) return;
-    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
-    float cursor = x;
-    for (const char* p = value; *p != '\0'; ++p) {
-        const auto rows = glyph(*p >= 'a' && *p <= 'z' ? static_cast<char>(*p - 'a' + 'A') : *p);
-        for (std::size_t row = 0; row < rows.size(); ++row) {
-            for (std::uint8_t col = 0; col < 5; ++col) {
-                if ((rows[row] & static_cast<std::uint8_t>(1U << (4U - col))) == 0) continue;
-                const SDL_FRect pixel{cursor + static_cast<float>(col) * scale,
-                                      y + static_cast<float>(row) * scale, scale, scale};
-                (void)SDL_RenderFillRect(renderer, &pixel);
-            }
-        }
-        cursor += 6.0F * scale;
-    }
+SDL_FPoint CircuitRenderer::text_size(const char* value, float scale, FontRole role) {
+    return FontManager::measure(value, scale, role);
+}
+
+void CircuitRenderer::text(SDL_Renderer* renderer, float x, float y, const char* value,
+                           float scale, SDL_Color color, FontRole role) {
+    FontManager::draw(renderer, x, y, value, scale, color, role);
 }
 
 void CircuitRenderer::render(SDL_Renderer* renderer,
@@ -128,6 +91,7 @@ void CircuitRenderer::render(SDL_Renderer* renderer,
                              const editor::CircuitRuntime& runtime,
                              const editor::Camera2D& camera,
                              bool show_grid,
+                             const editor::ComponentLibrary& library,
                              std::optional<WirePreview> preview) const {
     SDL_SetRenderDrawColor(renderer, kBackground.r, kBackground.g, kBackground.b, kBackground.a);
     (void)SDL_RenderClear(renderer);
@@ -152,34 +116,61 @@ void CircuitRenderer::render(SDL_Renderer* renderer,
         const auto top_left = camera.world_to_screen(component.position);
         const auto width = component.size.x * camera.zoom();
         const auto height = component.size.y * camera.zoom();
-        const auto selected = circuit.selection().component == component.id;
-        fill_rect(renderer, top_left.x, top_left.y, width, height, kComponentFill);
-        outline_rect(renderer, top_left.x, top_left.y, width, height, selected ? kSelection : kComponentBorder);
+        const auto selected = circuit.is_component_selected(component.id);
+        const auto custom = component.type == editor::ComponentType::Custom;
+        fill_rect(renderer, top_left.x, top_left.y, width, height,
+                  custom ? SDL_Color{44, 56, 78, 255} : kComponentFill);
+        outline_rect(renderer, top_left.x, top_left.y, width, height,
+                     selected ? kSelection : (custom ? SDL_Color{126, 154, 202, 255} : kComponentBorder));
 
         if (camera.zoom() >= 0.45F) {
             const auto label_scale = std::clamp(camera.zoom() * 1.35F, 0.65F, 1.65F);
-            const auto label_width = static_cast<float>(std::char_traits<char>::length(editor::component_name(component.type))) * 6.0F * label_scale;
-            auto label_y = top_left.y + (height - 7.0F * label_scale) * 0.5F;
+            const auto* definition = custom ? library.find(component.definition_id) : nullptr;
+            const std::string label = definition ? definition->name : editor::component_name(component.type);
+            const auto label_size = text_size(label.c_str(), label_scale);
+            auto label_y = top_left.y + (height - label_size.y) * 0.5F;
             if (component.type == editor::ComponentType::Input || component.type == editor::ComponentType::Output)
                 label_y = top_left.y + 7.0F * camera.zoom();
-            text(renderer, top_left.x + (width - label_width) * 0.5F, label_y,
-                 editor::component_name(component.type), label_scale, kText);
+            text(renderer, top_left.x + (width - label_size.x) * 0.5F, label_y,
+                 label.c_str(), label_scale, kText);
         }
 
         if (component.type == editor::ComponentType::Input) {
             const char* value = component.input_value ? "1" : "0";
             const auto scale = std::clamp(camera.zoom() * 2.0F, 1.0F, 2.5F);
-            text(renderer, top_left.x + width * 0.5F - 2.5F * scale,
-                 top_left.y + height * 0.55F, value, scale, component.input_value ? kLogicOne : kLogicZero);
+            const auto value_size = text_size(value, scale);
+            text(renderer, top_left.x + (width - value_size.x) * 0.5F,
+                 top_left.y + (height - value_size.y) * 0.62F,
+                 value, scale, component.input_value ? kLogicOne : kLogicZero);
         } else if (component.type == editor::ComponentType::Output && !component.inputs.empty()) {
             const auto state = runtime.signal_for_pin(component.inputs.front().id);
             const char* value = state == editor::SignalState::One ? "1" : state == editor::SignalState::Zero ? "0" : "?";
             const auto scale = std::clamp(camera.zoom() * 2.0F, 1.0F, 2.5F);
-            text(renderer, top_left.x + width * 0.5F - 2.5F * scale,
-                 top_left.y + height * 0.55F, value, scale, state_color(state));
+            const auto value_size = text_size(value, scale);
+            text(renderer, top_left.x + (width - value_size.x) * 0.5F,
+                 top_left.y + (height - value_size.y) * 0.62F,
+                 value, scale, state_color(state));
         }
 
-        if (camera.zoom() >= 0.65F && !component.inputs.empty()) {
+        if (custom && camera.zoom() >= 0.65F) {
+            const auto* definition = library.find(component.definition_id);
+            if (definition) {
+                for (const auto& port : definition->ports) {
+                    const auto& pins = port.direction == editor::PinDirection::Input ? component.inputs : component.outputs;
+                    const auto pin = std::find_if(pins.begin(), pins.end(), [&](const editor::Pin& item) { return item.key == port.id; });
+                    if (pin == pins.end()) continue;
+                    const auto pin_screen = camera.world_to_screen(component.position + pin->local_position);
+                    const auto label_scale = std::clamp(camera.zoom() * 0.65F, 0.55F, 0.9F);
+                    const auto label_size = text_size(port.name.c_str(), label_scale);
+                    const float label_x = port.direction == editor::PinDirection::Input
+                        ? pin_screen.x + 7.0F * camera.zoom()
+                        : pin_screen.x - 7.0F * camera.zoom() - label_size.x;
+                    text(renderer, label_x, pin_screen.y - label_size.y * 0.5F,
+                         port.name.c_str(), label_scale, kMuted);
+                }
+            }
+        }
+        if (!custom && camera.zoom() >= 0.65F && !component.inputs.empty()) {
             for (std::size_t i = 0; i < component.inputs.size(); ++i) {
                 const char* pin_label = nullptr;
                 if (component.type == editor::ComponentType::DFlipFlop)
@@ -190,8 +181,10 @@ void CircuitRenderer::render(SDL_Renderer* renderer,
                     pin_label = i == 0 ? "A" : "B";
                 if (pin_label) {
                     const auto pin_screen = camera.world_to_screen(component.position + component.inputs[i].local_position);
-                    text(renderer, pin_screen.x + 8.0F * camera.zoom(), pin_screen.y - 4.0F * camera.zoom(),
-                         pin_label, std::clamp(camera.zoom() * 0.8F, 0.65F, 1.0F), kMuted);
+                    const auto label_scale = std::clamp(camera.zoom() * 0.8F, 0.65F, 1.0F);
+                    const auto label_size = text_size(pin_label, label_scale);
+                    text(renderer, pin_screen.x + 8.0F * camera.zoom(),
+                         pin_screen.y - label_size.y * 0.5F, pin_label, label_scale, kMuted);
                 }
             }
         }
